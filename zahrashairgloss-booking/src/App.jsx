@@ -1,40 +1,71 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowRight, Bell, CalendarBlank, CaretLeft, CaretRight, Check, Clock, Plus, Scissors, Sparkle, Trash, User, X } from '@phosphor-icons/react';
 
-const STATIC_PREVIEW = window.location.hostname.endsWith('github.io');
+const USE_SUPABASE = window.location.hostname.endsWith('github.io');
+const SUPABASE_URL = 'https://kpncmfikfggnnlprieti.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_UUac6eNn00yh7ZM5UsLZGw_U2BjRP4c';
+const ADMIN_EMAIL = 'dxpvtm8nx9@privaterelay.appleid.com';
 const asset = (path) => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`;
-const previewServices = [
-  {id:'balayage',name:'Balayage inkl. Pflege, Schnitt und Styling',short:'Balayage Komplett',duration:240},
-  {id:'cut',name:'Schneiden',short:'Schneiden',duration:60},
-  {id:'gloss',name:'Glossing',short:'Glossing',duration:60},
-  {id:'gloss-cut',name:'Glossing & Schnitt',short:'Glossing & Schnitt',duration:60},
-  {id:'colour',name:'Colouring',short:'Colouring',duration:60},
-];
-const previewDates = () => {
-  const dates=[];
-  const cursor=new Date();
-  while(dates.length<6){cursor.setDate(cursor.getDate()+1);if(cursor.getDay()!==0)dates.push(cursor.toISOString().slice(0,10));}
-  return dates;
+
+const sessionToken = () => window.localStorage.getItem('zahra_admin_token') || '';
+const supabaseRequest = async (pathname, { method='GET', body, token=sessionToken() }={}) => {
+  const response = await fetch(`${SUPABASE_URL}${pathname}`, {
+    method,
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${token || SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = response.status === 204 ? null : await response.json();
+  if (!response.ok) throw new Error(data?.message || data?.error_description || data?.hint || 'Die Anfrage ist fehlgeschlagen.');
+  return data;
 };
-const previewApi = (path, options) => {
-  if(path==='/api/services')return {services:previewServices};
-  if(path==='/api/config')return {depositCents:3000,holdMinutes:10,termsVersion:'preview',timezone:'Europe/Berlin'};
-  if(path.startsWith('/api/dates'))return {dates:previewDates()};
-  if(path.startsWith('/api/availability')){
-    const params=new URLSearchParams(path.split('?')[1]);
-    const service=params.get('serviceId');
-    const weekday=new Date(`${params.get('date')}T12:00:00`).getDay();
-    if(service==='balayage')return {slots:weekday===6?['09:30','13:30']:['10:00','14:00']};
-    return {slots:weekday===6?['10:45','14:45']:['11:30','15:30']};
+const rpc = (name, params={}, token) => supabaseRequest(`/rest/v1/rpc/${name}`, {method:'POST',body:params,token});
+const berlinIso = (value) => {
+  const parts=Object.fromEntries(new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Berlin',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(value)).filter((part)=>part.type!=='literal').map((part)=>[part.type,part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+};
+const normalizeBooking = (item) => ({...item,serviceId:item.service_id,serviceName:item.service_name,serviceShort:item.service_short,startsAt:berlinIso(item.starts_at),endsAt:berlinIso(item.ends_at),firstName:item.first_name,lastName:item.last_name,paymentStatus:item.payment_status,depositCents:item.deposit_cents});
+const normalizeBlock = (item) => ({...item,startsAt:berlinIso(item.starts_at),endsAt:berlinIso(item.ends_at)});
+const normalizeNotification = (item) => ({...item,bookingId:item.booking_id,readAt:item.read_at,createdAt:item.created_at});
+
+const supabaseApi = async (path, options={}) => {
+  const method=options.method||'GET';
+  const payload=options.body?JSON.parse(options.body):{};
+  if(path==='/api/config')return {depositCents:3000,holdMinutes:10,termsVersion:'2026-06-10',timezone:'Europe/Berlin'};
+  if(path==='/api/services'){
+    const rows=await supabaseRequest('/rest/v1/services?select=id,name,short_name,duration_minutes&active=eq.true&order=duration_minutes.desc');
+    return {services:rows.map((row)=>({id:row.id,name:row.name,short:row.short_name,duration:row.duration_minutes}))};
   }
-  if(path==='/api/holds'&&options?.method==='POST')return {hold:{id:'preview',expiresAt:new Date(Date.now()+600000).toISOString()}};
-  if(path.startsWith('/api/holds/')&&options?.method==='DELETE')return {released:true};
-  if(path==='/api/admin/session')return {authenticated:false,configured:false};
-  throw new Error('Dies ist die GitHub-Vorschau. Echte Buchungen werden nach Aktivierung des Servers möglich.');
+  if(path.startsWith('/api/dates')){const p=new URLSearchParams(path.split('?')[1]);const rows=await rpc('get_bookable_dates',{p_service_id:p.get('serviceId')});return {dates:rows.map((row)=>row.date)};}
+  if(path.startsWith('/api/availability')){const p=new URLSearchParams(path.split('?')[1]);const rows=await rpc('get_available_slots',{p_service_id:p.get('serviceId'),p_date:p.get('date')});return {slots:rows.map((row)=>row.slot_time)};}
+  if(path==='/api/holds'&&method==='POST')return {hold:await rpc('create_hold',{p_service_id:payload.serviceId,p_date:payload.date,p_time:payload.time})};
+  if(path.startsWith('/api/holds/')&&method==='DELETE'){await rpc('release_hold',{p_hold_id:path.split('/').pop()});return {released:true};}
+  if(path==='/api/bookings/confirm-demo-payment'&&method==='POST')return {booking:await rpc('confirm_booking',{p_hold_id:payload.holdId,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email,p_phone:payload.customer.phone,p_note:payload.customer.note||'',p_terms_version:payload.acceptedTermsVersion})};
+  if(path==='/api/admin/login'&&method==='POST'){
+    const auth=await supabaseRequest('/auth/v1/token?grant_type=password',{method:'POST',body:{email:ADMIN_EMAIL,password:payload.password},token:SUPABASE_KEY});
+    window.localStorage.setItem('zahra_admin_token',auth.access_token);return {authenticated:true};
+  }
+  if(path==='/api/admin/logout'&&method==='POST'){window.localStorage.removeItem('zahra_admin_token');return {authenticated:false};}
+  if(path==='/api/admin/session'){
+    if(!sessionToken())return {authenticated:false,configured:true};
+    try{await supabaseRequest('/auth/v1/user',{token:sessionToken()});return {authenticated:true,configured:true};}catch{window.localStorage.removeItem('zahra_admin_token');return {authenticated:false,configured:true};}
+  }
+  if(path.startsWith('/api/admin/calendar')){const p=new URLSearchParams(path.split('?')[1]);const [bookings,blocks]=await Promise.all([rpc('admin_calendar',{p_from:p.get('from'),p_to:p.get('to')}),rpc('admin_blocks',{p_from:p.get('from'),p_to:p.get('to')})]);return {bookings:bookings.map(normalizeBooking),blocks:blocks.map(normalizeBlock)};}
+  if(path==='/api/admin/notifications')return {notifications:(await rpc('admin_notifications')).map(normalizeNotification)};
+  if(path==='/api/admin/notifications/read'&&method==='POST'){await rpc('admin_mark_notifications_read');return {read:true};}
+  if(path==='/api/admin/blocks'&&method==='POST')return {block:{id:await rpc('admin_create_block',{p_date:payload.date,p_reason:payload.reason})}};
+  if(path.startsWith('/api/admin/blocks/')&&method==='DELETE'){await rpc('admin_delete_block',{p_id:Number(path.split('/').pop())});return {deleted:true};}
+  if(path.startsWith('/api/admin/bookings/')&&method==='DELETE'){await rpc('admin_cancel_booking',{p_id:path.split('/').pop()});return {cancelled:true};}
+  if(path==='/api/admin/bookings'&&method==='POST')return {booking:await rpc('admin_create_booking',{p_service_id:payload.serviceId,p_date:payload.date,p_time:payload.time,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email||'',p_phone:payload.customer.phone||'',p_note:payload.customer.note||''})};
+  if(path.startsWith('/api/admin/bookings/')&&method==='PATCH')return {booking:await rpc('admin_move_booking',{p_id:path.split('/').pop(),p_date:payload.date,p_time:payload.time})};
+  throw new Error('Diese Funktion ist noch nicht verfügbar.');
 };
 
 const api = async (path, options) => {
-  if(STATIC_PREVIEW)return previewApi(path,options);
+  if(USE_SUPABASE)return supabaseApi(path,options);
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || 'Die Anfrage ist fehlgeschlagen.');
@@ -127,14 +158,14 @@ function BookingApp({ onAdmin }) {
         <button className="continue" disabled={!contactValid} onClick={()=>setStep(4)}>Weiter zur Bestätigung <ArrowRight size={18}/></button>
       </div>}
 
-      {step===4&&payment!=='success'&&<div className="flow-content"><button className="inline-back" onClick={()=>setStep(3)}><ArrowLeft size={17}/> Deine Daten</button><div className="reservation-bar"><Clock size={18}/><span>Serverseitig für dich reserviert</span><strong>{timeLeft}</strong></div><StepHeader step="4" title="Termin bestätigen" text="Nach erfolgreicher PayPal-Zahlung ist dein Termin verbindlich gebucht."/>
+      {step===4&&payment!=='success'&&<div className="flow-content"><button className="inline-back" onClick={()=>setStep(3)}><ArrowLeft size={17}/> Deine Daten</button><div className="reservation-bar"><Clock size={18}/><span>Serverseitig für dich reserviert</span><strong>{timeLeft}</strong></div><StepHeader step="4" title="Termin bestätigen" text="Dein Termin wird verbindlich gespeichert. Die 30-Euro-Anzahlung bleibt bis zur PayPal-Anbindung offen."/>
         <div className="final-summary"><div><span>Service</span><strong>{service?.name}</strong></div><div><span>Datum</span><strong>{date?.full}</strong></div><div><span>Uhrzeit</span><strong>{slot} Uhr</strong></div><div><span>Dauer</span><strong>{durationLabel(service?.duration)}</strong></div><div className="deposit-row"><span>Anzahlung</span><strong>30,00 €</strong></div></div>
         <div className="deposit-terms"><strong>Regelung zur Anzahlung</strong><p>Für die verbindliche Reservierung wird eine Anzahlung von 30,00 € fällig. Bei einer Stornierung durch die Kundin oder den Kunden wird die Anzahlung grundsätzlich nicht erstattet. Eine einmalige Umbuchung ist bis spätestens 24 Stunden vor Terminbeginn ohne erneute Anzahlung möglich; die bereits geleistete Anzahlung wird auf den Ersatztermin übertragen.</p><p>Sagt Zahrashairgloss den Termin ab und kann kein Ersatztermin vereinbart werden, wird die Anzahlung vollständig zurückerstattet. Zwingende gesetzliche Ansprüche bleiben unberührt.</p></div>
         <label className="terms-checkbox"><input type="checkbox" checked={depositTermsAccepted} onChange={(event)=>setDepositTermsAccepted(event.target.checked)}/><span>Ich habe die Regelung zur Anzahlung und Umbuchung gelesen und akzeptiere sie ausdrücklich.</span></label>
-        <button className="paypal" onClick={pay} disabled={!depositTermsAccepted||payment==='loading'||seconds===0}>{payment==='loading'?'Zahlung wird bestätigt …':<>30,00 € anzahlen mit <b>Pay</b><i>Pal</i></>}</button><p className="payment-note">Aktuell läuft eine serverseitige Demo-Zahlung. Im nächsten Schritt wird diese Stelle durch PayPal Checkout und verifizierte Webhooks ersetzt.</p>
+        <button className="paypal pending-booking" onClick={pay} disabled={!depositTermsAccepted||payment==='loading'||seconds===0}>{payment==='loading'?'Termin wird gespeichert …':'Termin verbindlich buchen'}</button><p className="payment-note">Die Anzahlung wird als offen vermerkt. Zahra kann sie bis zur späteren PayPal-Anbindung manuell nachverfolgen.</p>
       </div>}
 
-      {payment==='success'&&<div className="success-view"><span className="success-mark"><Check size={28} weight="bold"/></span><span className="success-kicker">Termin bestätigt</span><h2>Wir sehen uns<br/>am {date?.date}. {date?.month}.</h2><p>{slot} Uhr · {service?.short}<br/>Die Buchung und 30,00 € Demo-Anzahlung wurden in der Datenbank gespeichert.</p><button onClick={()=>window.location.reload()}>Neue Buchung</button></div>}
+      {payment==='success'&&<div className="success-view"><span className="success-mark"><Check size={28} weight="bold"/></span><span className="success-kicker">Termin bestätigt</span><h2>Wir sehen uns<br/>am {date?.date}. {date?.month}.</h2><p>{slot} Uhr · {service?.short}<br/>Die Buchung wurde gespeichert. Die Anzahlung von 30,00 € ist noch offen.</p><button onClick={()=>window.location.reload()}>Neue Buchung</button></div>}
     </section>
   </main>;
 }
@@ -213,14 +244,14 @@ function Admin({ onExit, onLoggedOut }) {
       <div className="day-heading"><div><span>{selectedView.full}</span><h2>{dayBlock?'Freier Tag':'Tagesplan'}</h2></div>{dayBlock?<button className="text-action danger" onClick={()=>removeBlock(dayBlock.id)}>Wieder öffnen</button>:<button className="text-action" onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}>+ Termin</button>}</div>
       {dayBlock?<div className="day-off-card"><span><CalendarBlank size={22}/></span><div><strong>{dayBlock.reason}</strong><p>An diesem Tag werden keine Online-Termine angeboten.</p></div></div>:<div className="admin-agenda">{dayBookings.length?dayBookings.map((item)=><button className="agenda-item" key={item.id} onClick={()=>{setSelectedBooking(item);setSheet('details');}}><time>{item.startsAt.slice(11,16)}</time><span className={`agenda-line ${item.serviceId==='balayage'?'long':''}`}/><div><strong>{item.firstName} {item.lastName}</strong><p>{item.serviceShort} · {durationLabel(item.duration)}</p></div><span className={`booking-source ${item.paymentStatus==='manual'?'manual':'online'}`}>{item.paymentStatus==='manual'?'Manuell':'Online'}</span><CaretRight size={17}/></button>):<div className="empty-day"><Clock size={25}/><strong>Noch keine Termine</strong><p>Nutze „Termin“, um diesen Tag manuell zu belegen.</p></div>}</div>}
 
-      <section className="quick-overview"><h3>Diese Woche</h3><div><span><strong>{bookings.length}</strong> Termine</span><span><strong>{bookings.filter((item)=>item.paymentStatus!=='manual').length*30} €</strong> Anzahlungen</span><span><strong>{blocks.length}</strong> freie Tage</span></div></section>
+      <section className="quick-overview"><h3>Diese Woche</h3><div><span><strong>{bookings.length}</strong> Termine</span><span><strong>{bookings.filter((item)=>item.paymentStatus==='paid').length*30} €</strong> erhalten</span><span><strong>{blocks.length}</strong> freie Tage</span></div></section>
     </section>
 
     <nav className="admin-bottom-actions"><button onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}><Plus size={21}/><span>Termin</span></button><button onClick={()=>{setFreeDay({date:selectedDate,reason:'Frei'});setSheet('free-day');}}><CalendarBlank size={21}/><span>Freier Tag</span></button></nav>
 
     {sheet==='booking'&&<AdminSheet title="Termin eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveManual}><label>Service<select value={manual.serviceId} onChange={(e)=>setManual({...manual,serviceId:e.target.value})}>{services.map((item)=><option key={item.id} value={item.id}>{item.short}</option>)}</select></label><div className="form-pair"><label>Datum<input type="date" value={manual.date} onChange={(e)=>setManual({...manual,date:e.target.value})}/></label><label>Uhrzeit<select value={manual.time} onChange={(e)=>setManual({...manual,time:e.target.value})}>{manualSlots.map((time)=><option key={time}>{time}</option>)}</select></label></div>{!manualSlots.length&&<p className="form-warning">An diesem Tag ist für den Service kein Termin frei.</p>}<div className="form-pair"><label>Vorname<input required value={manual.firstName} onChange={(e)=>setManual({...manual,firstName:e.target.value})}/></label><label>Nachname<input required value={manual.lastName} onChange={(e)=>setManual({...manual,lastName:e.target.value})}/></label></div><label>Telefon <span>optional</span><input value={manual.phone} onChange={(e)=>setManual({...manual,phone:e.target.value})}/></label><label>Notiz <span>optional</span><textarea value={manual.note} onChange={(e)=>setManual({...manual,note:e.target.value})}/></label><button className="sheet-primary" disabled={!manual.time}>Termin speichern</button></form></AdminSheet>}
     {sheet==='free-day'&&<AdminSheet title="Freien Tag eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveFreeDay}><label>Datum<input type="date" value={freeDay.date} onChange={(e)=>setFreeDay({...freeDay,date:e.target.value})}/></label><label>Grund<select value={freeDay.reason} onChange={(e)=>setFreeDay({...freeDay,reason:e.target.value})}><option>Frei</option><option>Urlaub</option><option>Krank</option><option>Fortbildung</option><option>Privater Termin</option></select></label><p className="sheet-note">Der Tag verschwindet sofort aus der Online-Buchung. Bestehende Termine müssen vorher verschoben oder storniert werden.</p><button className="sheet-primary">Tag blockieren</button></form></AdminSheet>}
-    {sheet==='details'&&selectedBooking&&<AdminSheet title="Termindetails" onClose={()=>setSheet(null)}><div className="appointment-detail"><div className="detail-person"><span>{selectedBooking.firstName[0]}{selectedBooking.lastName[0]}</span><div><h3>{selectedBooking.firstName} {selectedBooking.lastName}</h3><p>{selectedBooking.phone||'Keine Telefonnummer'}</p></div></div><dl><div><dt>Zeit</dt><dd>{selectedBooking.startsAt.slice(11,16)} Uhr</dd></div><div><dt>Service</dt><dd>{selectedBooking.serviceName}</dd></div><div><dt>Buchung</dt><dd>{selectedBooking.paymentStatus==='manual'?'Manuell eingetragen':'Online · 30 € angezahlt'}</dd></div>{selectedBooking.note&&<div><dt>Notiz</dt><dd>{selectedBooking.note}</dd></div>}</dl><button className="sheet-secondary" onClick={()=>{setMove({date:selectedBooking.startsAt.slice(0,10),time:''});setSheet('move');}}><CalendarBlank size={17}/> Termin verschieben</button><button className="sheet-danger" onClick={()=>cancelAppointment(selectedBooking.id)}><Trash size={17}/> Termin stornieren</button></div></AdminSheet>}
+    {sheet==='details'&&selectedBooking&&<AdminSheet title="Termindetails" onClose={()=>setSheet(null)}><div className="appointment-detail"><div className="detail-person"><span>{selectedBooking.firstName[0]}{selectedBooking.lastName[0]}</span><div><h3>{selectedBooking.firstName} {selectedBooking.lastName}</h3><p>{selectedBooking.phone||'Keine Telefonnummer'}</p></div></div><dl><div><dt>Zeit</dt><dd>{selectedBooking.startsAt.slice(11,16)} Uhr</dd></div><div><dt>Service</dt><dd>{selectedBooking.serviceName}</dd></div><div><dt>Buchung</dt><dd>{selectedBooking.paymentStatus==='manual'?'Manuell eingetragen':selectedBooking.paymentStatus==='paid'?'Online · 30 € angezahlt':'Online · Anzahlung offen'}</dd></div>{selectedBooking.note&&<div><dt>Notiz</dt><dd>{selectedBooking.note}</dd></div>}</dl><button className="sheet-secondary" onClick={()=>{setMove({date:selectedBooking.startsAt.slice(0,10),time:''});setSheet('move');}}><CalendarBlank size={17}/> Termin verschieben</button><button className="sheet-danger" onClick={()=>cancelAppointment(selectedBooking.id)}><Trash size={17}/> Termin stornieren</button></div></AdminSheet>}
     {sheet==='move'&&selectedBooking&&<AdminSheet title="Termin verschieben" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveMove}><p className="sheet-note">{selectedBooking.firstName} {selectedBooking.lastName} · {selectedBooking.serviceShort}</p><label>Neues Datum<input type="date" value={move.date} onChange={(e)=>setMove({...move,date:e.target.value})}/></label><label>Freie Uhrzeit<select value={move.time} onChange={(e)=>setMove({...move,time:e.target.value})}>{moveSlots.map((time)=><option key={time}>{time}</option>)}</select></label>{!moveSlots.length&&<p className="form-warning">An diesem Tag ist kein passender Termin frei.</p>}<button className="sheet-primary" disabled={!move.time}>Verschieben</button></form></AdminSheet>}
     {sheet==='notifications'&&<AdminSheet title="Benachrichtigungen" onClose={()=>setSheet(null)}><div className="notification-list">{notifications.length?notifications.map((item)=><article key={item.id} className={!item.readAt?'unread':''}><span><Bell size={17}/></span><div><strong>{item.title}</strong><p>{item.message}</p><small>{new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(item.createdAt))}</small></div></article>):<div className="empty-notifications">Keine neuen Benachrichtigungen.</div>}</div></AdminSheet>}
   </main>;
