@@ -110,7 +110,6 @@ function BookingApp({ onAdmin }) {
     <section className="flow-panel">
       <button className="admin-entry" onClick={onAdmin}>Admin</button>
       <div className="progress-dots" aria-label={`Schritt ${step} von 4`}>{[1,2,3,4].map((item)=><span key={item} className={item<=step?'active':''}/>)}</div>
-      {STATIC_PREVIEW&&<div className="preview-notice">Online-Vorschau · Buchungen noch nicht aktiv</div>}
       {error&&<div className="flow-error" role="alert">{error}</div>}
 
       {step===1&&<div className="flow-content"><StepHeader step="1" title="Was darf es sein?" text="Wähle den gewünschten Service."/>
