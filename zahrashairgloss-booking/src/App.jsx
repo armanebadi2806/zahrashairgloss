@@ -1,0 +1,196 @@
+import { useEffect, useState } from 'react';
+import { ArrowLeft, ArrowRight, Bell, CalendarBlank, CaretLeft, CaretRight, Check, Clock, Plus, Scissors, Sparkle, Trash, User, X } from '@phosphor-icons/react';
+
+const api = async (path, options) => {
+  const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error || 'Die Anfrage ist fehlgeschlagen.');
+  return body;
+};
+
+function durationLabel(minutes) {
+  if (minutes === 240) return '4 Stunden';
+  if (minutes === 90) return '1 Stunde 30 Minuten';
+  return '1 Stunde';
+}
+
+function dateView(value) {
+  const date = new Date(`${value}T12:00:00`);
+  return {
+    value,
+    day: new Intl.DateTimeFormat('de-DE', { weekday: 'short' }).format(date).replace('.', ''),
+    date: new Intl.DateTimeFormat('de-DE', { day: '2-digit' }).format(date),
+    month: new Intl.DateTimeFormat('de-DE', { month: 'short' }).format(date).replace('.', ''),
+    full: new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: 'numeric', month: 'long' }).format(date),
+  };
+}
+
+function Summary({ service, date, slot, onEdit }) {
+  return <aside className="booking-summary">
+    <div className="brand-lockup"><img src="/assets/zahra-portrait.jpg" alt="Zahra von Zahrashairgloss" /><div><span>Bei Zahra</span><div className="brand">Zahrashairgloss</div></div></div>
+    <div className="summary-title"><span>Online-Buchung</span><h1>Dein Termin.<br />Einfach gebucht.</h1></div>
+    <div className="summary-details">
+      <div><Scissors size={19}/><p><span>Service</span><strong>{service ? service.short : 'Noch nicht gewählt'}</strong>{service&&<small>{durationLabel(service.duration)}</small>}</p>{service&&<button onClick={()=>onEdit(1)}>Ändern</button>}</div>
+      <div><CalendarBlank size={19}/><p><span>Termin</span><strong>{date&&slot?`${date.full}, ${slot} Uhr`:'Noch nicht gewählt'}</strong></p>{date&&slot&&<button onClick={()=>onEdit(2)}>Ändern</button>}</div>
+    </div>
+    <p className="summary-help">Fragen zur Buchung?<br/><a href="mailto:hallo@zahrashairgloss.de">hallo@zahrashairgloss.de</a></p>
+  </aside>;
+}
+
+function StepHeader({ step, title, text }) {
+  return <div className="step-header"><span>Schritt {step} von 4</span><h2>{title}</h2>{text&&<p>{text}</p>}</div>;
+}
+
+function BookingApp({ onAdmin }) {
+  const [step,setStep]=useState(1);
+  const [services,setServices]=useState([]);
+  const [dates,setDates]=useState([]);
+  const [service,setService]=useState(null);
+  const [date,setDate]=useState(null);
+  const [slot,setSlot]=useState(null);
+  const [slots,setSlots]=useState([]);
+  const [hold,setHold]=useState(null);
+  const [seconds,setSeconds]=useState(600);
+  const [payment,setPayment]=useState('idle');
+  const [termsVersion,setTermsVersion]=useState('');
+  const [depositTermsAccepted,setDepositTermsAccepted]=useState(false);
+  const [customer,setCustomer]=useState({firstName:'',lastName:'',email:'',phone:'',note:''});
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState('');
+
+  useEffect(()=>{Promise.all([api('/api/services'),api('/api/config')]).then(([serviceData,config])=>{setServices(serviceData.services);setTermsVersion(config.termsVersion);}).catch((err)=>setError(err.message)).finally(()=>setLoading(false));},[]);
+  useEffect(()=>{if(!service)return;setDates([]);setDate(null);setSlot(null);setLoading(true);api(`/api/dates?serviceId=${encodeURIComponent(service.id)}`).then((data)=>setDates(data.dates.map(dateView))).catch((err)=>setError(err.message)).finally(()=>setLoading(false));},[service]);
+  useEffect(()=>{if(!date||!service)return;setSlots([]);setSlot(null);setLoading(true);api(`/api/availability?serviceId=${encodeURIComponent(service.id)}&date=${date.value}`).then((data)=>setSlots(data.slots)).catch((err)=>setError(err.message)).finally(()=>setLoading(false));},[date,service]);
+  useEffect(()=>{if(!hold||payment==='success')return;const update=()=>{const left=Math.max(0,Math.ceil((new Date(hold.expiresAt).getTime()-Date.now())/1000));setSeconds(left);if(left===0){setError('Die Reservierungszeit ist abgelaufen. Bitte wähle den Termin erneut.');setHold(null);setStep(2);}};update();const timer=window.setInterval(update,1000);return()=>window.clearInterval(timer);},[hold,payment]);
+
+  const releaseHold=async()=>{if(!hold)return;try{await api(`/api/holds/${hold.id}`,{method:'DELETE'});}catch{}setHold(null);};
+  const editStep=async(target)=>{if(target<3)await releaseHold();setError('');setStep(target);};
+  const chooseService=(item)=>{setService(item);setDate(null);setSlot(null);setError('');window.setTimeout(()=>setStep(2),140);};
+  const reserveSlot=async()=>{setError('');setLoading(true);try{const data=await api('/api/holds',{method:'POST',body:JSON.stringify({serviceId:service.id,date:date.value,time:slot})});setHold(data.hold);setStep(3);}catch(err){setError(err.message);const data=await api(`/api/availability?serviceId=${service.id}&date=${date.value}`);setSlots(data.slots);setSlot(null);}finally{setLoading(false);}};
+  const updateCustomer=(field)=>(event)=>setCustomer((current)=>({...current,[field]:event.target.value}));
+  const contactValid=customer.firstName.trim()&&customer.lastName.trim()&&customer.email.includes('@')&&customer.phone.trim();
+  const pay=async()=>{if(!depositTermsAccepted||!hold)return;setPayment('loading');setError('');try{await api('/api/bookings/confirm-demo-payment',{method:'POST',body:JSON.stringify({holdId:hold.id,customer,acceptedTermsVersion:termsVersion})});setPayment('success');}catch(err){setPayment('idle');setError(err.message);}};
+  const timeLeft=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
+
+  return <main className="booking-shell">
+    <Summary service={service} date={date} slot={slot} onEdit={editStep}/>
+    <section className="flow-panel">
+      <button className="admin-entry" onClick={onAdmin}>Admin</button>
+      <div className="progress-dots" aria-label={`Schritt ${step} von 4`}>{[1,2,3,4].map((item)=><span key={item} className={item<=step?'active':''}/>)}</div>
+      {error&&<div className="flow-error" role="alert">{error}</div>}
+
+      {step===1&&<div className="flow-content"><StepHeader step="1" title="Was darf es sein?" text="Wähle den gewünschten Service."/>
+        {loading&&!services.length?<p className="loading-copy">Services werden geladen …</p>:<div className="service-options">{services.map((item)=><button key={item.id} onClick={()=>chooseService(item)}><span className="service-icon"><Sparkle size={19}/></span><span><strong>{item.name}</strong><small>{durationLabel(item.duration)}</small></span><ArrowRight size={20}/></button>)}</div>}
+      </div>}
+
+      {step===2&&<div className="flow-content"><button className="inline-back" onClick={()=>editStep(1)}><ArrowLeft size={17}/> Service</button><StepHeader step="2" title="Wähle deinen Termin" text="Es werden ausschließlich aktuell verfügbare, zur Behandlungsdauer passende Zeiten angezeigt."/>
+        {loading&&!dates.length?<div className="date-hint"><Clock size={24}/><span>Die nächsten freien Tage werden gesucht …</span></div>:<div className="date-picker">{dates.map((item)=><button key={item.value} className={date?.value===item.value?'selected':''} onClick={()=>{setDate(item);setError('');}}><span>{item.day}</span><strong>{item.date}</strong><small>{item.month}</small></button>)}</div>}
+        {date?<div className="times-section"><div className="times-label"><span><i/>Verfügbar am {date.full}</span><small>Zeitzone Berlin</small></div>{loading?<div className="date-hint"><Clock size={24}/><span>Freie Zeiten werden geprüft …</span></div>:slots.length?<div className="time-options">{slots.map((item)=><button key={item} className={slot===item?'selected':''} onClick={()=>setSlot(item)}>{item}</button>)}</div>:<div className="date-hint"><CalendarBlank size={24}/><span>An diesem Tag ist nichts mehr frei.</span></div>}</div>:<div className="date-hint"><CalendarBlank size={24}/><span>Wähle zuerst einen Tag.</span></div>}
+        <button className="continue" disabled={!date||!slot||loading} onClick={reserveSlot}>10 Minuten reservieren <ArrowRight size={18}/></button>
+      </div>}
+
+      {step===3&&<div className="flow-content"><button className="inline-back" onClick={()=>editStep(2)}><ArrowLeft size={17}/> Termin</button><div className="reservation-bar"><Clock size={18}/><span>Serverseitig für dich reserviert</span><strong>{timeLeft}</strong></div><StepHeader step="3" title="Wie können wir dich erreichen?"/>
+        <div className="contact-form"><label>Vorname<input autoFocus value={customer.firstName} onChange={updateCustomer('firstName')} placeholder="Dein Vorname"/></label><label>Nachname<input value={customer.lastName} onChange={updateCustomer('lastName')} placeholder="Dein Nachname"/></label><label className="wide">E-Mail<input type="email" value={customer.email} onChange={updateCustomer('email')} placeholder="name@beispiel.de"/></label><label className="wide">Mobilnummer<input type="tel" value={customer.phone} onChange={updateCustomer('phone')} placeholder="+49"/></label><label className="wide">Notiz <span>optional</span><textarea value={customer.note} onChange={updateCustomer('note')} placeholder="Gibt es etwas, das Zahra vorab wissen sollte?"/></label></div>
+        <button className="continue" disabled={!contactValid} onClick={()=>setStep(4)}>Weiter zur Bestätigung <ArrowRight size={18}/></button>
+      </div>}
+
+      {step===4&&payment!=='success'&&<div className="flow-content"><button className="inline-back" onClick={()=>setStep(3)}><ArrowLeft size={17}/> Deine Daten</button><div className="reservation-bar"><Clock size={18}/><span>Serverseitig für dich reserviert</span><strong>{timeLeft}</strong></div><StepHeader step="4" title="Termin bestätigen" text="Nach erfolgreicher PayPal-Zahlung ist dein Termin verbindlich gebucht."/>
+        <div className="final-summary"><div><span>Service</span><strong>{service?.name}</strong></div><div><span>Datum</span><strong>{date?.full}</strong></div><div><span>Uhrzeit</span><strong>{slot} Uhr</strong></div><div><span>Dauer</span><strong>{durationLabel(service?.duration)}</strong></div><div className="deposit-row"><span>Anzahlung</span><strong>30,00 €</strong></div></div>
+        <div className="deposit-terms"><strong>Regelung zur Anzahlung</strong><p>Für die verbindliche Reservierung wird eine Anzahlung von 30,00 € fällig. Bei einer Stornierung durch die Kundin oder den Kunden wird die Anzahlung grundsätzlich nicht erstattet. Eine einmalige Umbuchung ist bis spätestens 24 Stunden vor Terminbeginn ohne erneute Anzahlung möglich; die bereits geleistete Anzahlung wird auf den Ersatztermin übertragen.</p><p>Sagt Zahrashairgloss den Termin ab und kann kein Ersatztermin vereinbart werden, wird die Anzahlung vollständig zurückerstattet. Zwingende gesetzliche Ansprüche bleiben unberührt.</p></div>
+        <label className="terms-checkbox"><input type="checkbox" checked={depositTermsAccepted} onChange={(event)=>setDepositTermsAccepted(event.target.checked)}/><span>Ich habe die Regelung zur Anzahlung und Umbuchung gelesen und akzeptiere sie ausdrücklich.</span></label>
+        <button className="paypal" onClick={pay} disabled={!depositTermsAccepted||payment==='loading'||seconds===0}>{payment==='loading'?'Zahlung wird bestätigt …':<>30,00 € anzahlen mit <b>Pay</b><i>Pal</i></>}</button><p className="payment-note">Aktuell läuft eine serverseitige Demo-Zahlung. Im nächsten Schritt wird diese Stelle durch PayPal Checkout und verifizierte Webhooks ersetzt.</p>
+      </div>}
+
+      {payment==='success'&&<div className="success-view"><span className="success-mark"><Check size={28} weight="bold"/></span><span className="success-kicker">Termin bestätigt</span><h2>Wir sehen uns<br/>am {date?.date}. {date?.month}.</h2><p>{slot} Uhr · {service?.short}<br/>Die Buchung und 30,00 € Demo-Anzahlung wurden in der Datenbank gespeichert.</p><button onClick={()=>window.location.reload()}>Neue Buchung</button></div>}
+    </section>
+  </main>;
+}
+
+const isoDate=(date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+const addDays=(date,days)=>{const next=new Date(date);next.setDate(next.getDate()+days);return next;};
+const startMonday=(date)=>{const day=date.getDay()||7;return addDays(date,1-day);};
+
+function AdminSheet({ title, onClose, children }) {
+  return <div className="admin-sheet-layer"><button className="sheet-backdrop" onClick={onClose} aria-label="Schließen"/><section className="admin-sheet"><div className="sheet-handle"/><div className="sheet-title"><h2>{title}</h2><button onClick={onClose} aria-label="Schließen"><X size={20}/></button></div>{children}</section></div>;
+}
+
+function AdminLogin({ onAuthenticated, onExit }) {
+  const [password,setPassword]=useState('');
+  const [error,setError]=useState('');
+  const [loading,setLoading]=useState(false);
+  const submit=async(event)=>{event.preventDefault();setLoading(true);setError('');try{await api('/api/admin/login',{method:'POST',body:JSON.stringify({password})});onAuthenticated();}catch(err){setError(err.message);setPassword('');}finally{setLoading(false);}};
+  return <main className="admin-login"><button className="login-exit" onClick={onExit}><ArrowLeft size={18}/> Buchungsseite</button><section><img src="/assets/zahra-portrait.jpg" alt="Zahra"/><span>Geschützter Bereich</span><h1>Willkommen,<br/>Zahra.</h1><p>Melde dich an, um Termine und freie Tage zu verwalten.</p><form onSubmit={submit}><label>Passwort<input autoFocus type="password" value={password} onChange={(event)=>setPassword(event.target.value)} autoComplete="current-password" placeholder="Dein Admin-Passwort"/></label>{error&&<div className="login-error" role="alert">{error}</div>}<button disabled={loading||!password}>{loading?'Anmeldung läuft …':'Sicher anmelden'} <ArrowRight size={18}/></button></form><small>Die Sitzung bleibt auf diesem Gerät 12 Stunden aktiv.</small></section></main>;
+}
+
+function ProtectedAdmin({ onExit }) {
+  const [status,setStatus]=useState('loading');
+  useEffect(()=>{api('/api/admin/session').then((data)=>setStatus(data.authenticated?'authenticated':'login')).catch(()=>setStatus('login'));},[]);
+  if(status==='loading')return <main className="admin-auth-loading"><span/><p>Admin-Bereich wird geschützt geladen …</p></main>;
+  if(status==='login')return <AdminLogin onExit={onExit} onAuthenticated={()=>setStatus('authenticated')}/>;
+  return <Admin onExit={onExit} onLoggedOut={()=>setStatus('login')}/>;
+}
+
+function Admin({ onExit, onLoggedOut }) {
+  const [services,setServices]=useState([]);
+  const [weekStart,setWeekStart]=useState(startMonday(new Date()));
+  const [selectedDate,setSelectedDate]=useState(isoDate(new Date()));
+  const [bookings,setBookings]=useState([]);
+  const [blocks,setBlocks]=useState([]);
+  const [notifications,setNotifications]=useState([]);
+  const [sheet,setSheet]=useState(null);
+  const [selectedBooking,setSelectedBooking]=useState(null);
+  const [error,setError]=useState('');
+  const [notice,setNotice]=useState('');
+  const [manual,setManual]=useState({serviceId:'',date:isoDate(new Date()),time:'',firstName:'',lastName:'',email:'',phone:'',note:''});
+  const [manualSlots,setManualSlots]=useState([]);
+  const [freeDay,setFreeDay]=useState({date:isoDate(new Date()),reason:'Frei'});
+  const [move,setMove]=useState({date:isoDate(new Date()),time:''});
+  const [moveSlots,setMoveSlots]=useState([]);
+  const weekDays=Array.from({length:7},(_,index)=>addDays(weekStart,index));
+  const weekEnd=isoDate(weekDays[6]);
+
+  const refresh=async()=>{setError('');try{const [calendarData,notificationData,serviceData]=await Promise.all([api(`/api/admin/calendar?from=${isoDate(weekStart)}&to=${weekEnd}`),api('/api/admin/notifications'),api('/api/services')]);setBookings(calendarData.bookings);setBlocks(calendarData.blocks);setNotifications(notificationData.notifications);setServices(serviceData.services);setManual((value)=>({...value,serviceId:value.serviceId||serviceData.services[0]?.id||''}));}catch(err){setError(err.message);}};
+  useEffect(()=>{refresh();},[weekStart]);
+  useEffect(()=>{const timer=window.setInterval(()=>{api('/api/admin/notifications').then((data)=>setNotifications(data.notifications)).catch(()=>{});},20000);return()=>window.clearInterval(timer);},[]);
+  useEffect(()=>{if(!manual.serviceId||!manual.date)return;api(`/api/availability?serviceId=${manual.serviceId}&date=${manual.date}`).then((data)=>{setManualSlots(data.slots);setManual((value)=>({...value,time:data.slots.includes(value.time)?value.time:(data.slots[0]||'')}));}).catch((err)=>setError(err.message));},[manual.serviceId,manual.date,sheet]);
+  useEffect(()=>{if(sheet!=='move'||!selectedBooking||!move.date)return;api(`/api/availability?serviceId=${selectedBooking.serviceId}&date=${move.date}`).then((data)=>{setMoveSlots(data.slots);setMove((value)=>({...value,time:data.slots.includes(value.time)?value.time:(data.slots[0]||'')}));}).catch((err)=>setError(err.message));},[sheet,selectedBooking,move.date]);
+
+  const dayBookings=bookings.filter((item)=>item.startsAt.slice(0,10)===selectedDate);
+  const dayBlock=blocks.find((item)=>item.startsAt.slice(0,10)===selectedDate);
+  const unread=notifications.filter((item)=>!item.readAt).length;
+  const selectedView=dateView(selectedDate);
+  const changeWeek=(days)=>{const next=addDays(weekStart,days);setWeekStart(next);setSelectedDate(isoDate(next));};
+  const flash=(message)=>{setNotice(message);window.setTimeout(()=>setNotice(''),2600);};
+  const saveManual=async(event)=>{event.preventDefault();try{await api('/api/admin/bookings',{method:'POST',body:JSON.stringify({serviceId:manual.serviceId,date:manual.date,time:manual.time,customer:{firstName:manual.firstName,lastName:manual.lastName,email:manual.email,phone:manual.phone,note:manual.note}})});setSheet(null);setSelectedDate(manual.date);flash('Termin wurde eingetragen.');await refresh();}catch(err){setError(err.message);}};
+  const saveFreeDay=async(event)=>{event.preventDefault();try{await api('/api/admin/blocks',{method:'POST',body:JSON.stringify(freeDay)});setSheet(null);setSelectedDate(freeDay.date);flash('Freier Tag wurde gespeichert.');await refresh();}catch(err){setError(err.message);}};
+  const removeBlock=async(id)=>{await api(`/api/admin/blocks/${id}`,{method:'DELETE'});flash('Tag ist wieder buchbar.');await refresh();};
+  const cancelAppointment=async(id)=>{if(!window.confirm('Termin wirklich stornieren?'))return;await api(`/api/admin/bookings/${id}`,{method:'DELETE'});setSelectedBooking(null);setSheet(null);flash('Termin wurde storniert.');await refresh();};
+  const saveMove=async(event)=>{event.preventDefault();try{await api(`/api/admin/bookings/${selectedBooking.id}`,{method:'PATCH',body:JSON.stringify(move)});setSheet(null);setSelectedDate(move.date);flash('Termin wurde verschoben.');await refresh();}catch(err){setError(err.message);}};
+  const openNotifications=async()=>{setSheet('notifications');if(unread){await api('/api/admin/notifications/read',{method:'POST',body:'{}'});setNotifications((items)=>items.map((item)=>({...item,readAt:item.readAt||new Date().toISOString()})));}};
+  const logout=async()=>{await api('/api/admin/logout',{method:'POST',body:'{}'});onLoggedOut();};
+
+  return <main className="admin-workspace">
+    <header className="mobile-admin-header"><div className="admin-profile"><img src="/assets/zahra-portrait.jpg" alt="Zahra"/><div><span>Dein Studio</span><strong>Zahrashairgloss</strong></div></div><div className="admin-header-actions"><button onClick={openNotifications} aria-label="Benachrichtigungen"><Bell size={21}/>{unread>0&&<i>{unread}</i>}</button><button onClick={logout} aria-label="Sicher abmelden"><ArrowRight size={21}/></button></div></header>
+    <section className="admin-content">
+      {error&&<div className="admin-message error" role="alert">{error}<button onClick={()=>setError('')}><X size={15}/></button></div>}{notice&&<div className="admin-message success"><Check size={16}/>{notice}</div>}
+      <div className="admin-greeting"><div><span className="eyebrow">Kalender</span><h1>Hallo Zahra.</h1><p>{dayBookings.length?`${dayBookings.length} ${dayBookings.length===1?'Termin':'Termine'} am ausgewählten Tag.`:'Der ausgewählte Tag ist noch frei.'}</p></div><button className="today-button" onClick={()=>{const today=new Date();setWeekStart(startMonday(today));setSelectedDate(isoDate(today));}}>Heute</button></div>
+
+      <div className="week-card"><div className="week-toolbar"><button onClick={()=>changeWeek(-7)} aria-label="Vorherige Woche"><CaretLeft size={19}/></button><strong>{new Intl.DateTimeFormat('de-DE',{month:'long',year:'numeric'}).format(weekStart)}</strong><button onClick={()=>changeWeek(7)} aria-label="Nächste Woche"><CaretRight size={19}/></button></div><div className="week-strip">{weekDays.map((day)=>{const value=isoDate(day);const count=bookings.filter((item)=>item.startsAt.slice(0,10)===value).length;const blocked=blocks.some((item)=>item.startsAt.slice(0,10)===value);return <button key={value} className={`${selectedDate===value?'selected':''} ${blocked?'blocked':''}`} onClick={()=>setSelectedDate(value)}><span>{new Intl.DateTimeFormat('de-DE',{weekday:'short'}).format(day).replace('.','')}</span><strong>{day.getDate()}</strong>{blocked?<i className="off-dot"/>:count>0?<i className="count-dot">{count}</i>:<i/>}</button>;})}</div></div>
+
+      <div className="day-heading"><div><span>{selectedView.full}</span><h2>{dayBlock?'Freier Tag':'Tagesplan'}</h2></div>{dayBlock?<button className="text-action danger" onClick={()=>removeBlock(dayBlock.id)}>Wieder öffnen</button>:<button className="text-action" onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}>+ Termin</button>}</div>
+      {dayBlock?<div className="day-off-card"><span><CalendarBlank size={22}/></span><div><strong>{dayBlock.reason}</strong><p>An diesem Tag werden keine Online-Termine angeboten.</p></div></div>:<div className="admin-agenda">{dayBookings.length?dayBookings.map((item)=><button className="agenda-item" key={item.id} onClick={()=>{setSelectedBooking(item);setSheet('details');}}><time>{item.startsAt.slice(11,16)}</time><span className={`agenda-line ${item.serviceId==='balayage'?'long':''}`}/><div><strong>{item.firstName} {item.lastName}</strong><p>{item.serviceShort} · {durationLabel(item.duration)}</p></div><span className={`booking-source ${item.paymentStatus==='manual'?'manual':'online'}`}>{item.paymentStatus==='manual'?'Manuell':'Online'}</span><CaretRight size={17}/></button>):<div className="empty-day"><Clock size={25}/><strong>Noch keine Termine</strong><p>Nutze „Termin“, um diesen Tag manuell zu belegen.</p></div>}</div>}
+
+      <section className="quick-overview"><h3>Diese Woche</h3><div><span><strong>{bookings.length}</strong> Termine</span><span><strong>{bookings.filter((item)=>item.paymentStatus!=='manual').length*30} €</strong> Anzahlungen</span><span><strong>{blocks.length}</strong> freie Tage</span></div></section>
+    </section>
+
+    <nav className="admin-bottom-actions"><button onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}><Plus size={21}/><span>Termin</span></button><button onClick={()=>{setFreeDay({date:selectedDate,reason:'Frei'});setSheet('free-day');}}><CalendarBlank size={21}/><span>Freier Tag</span></button></nav>
+
+    {sheet==='booking'&&<AdminSheet title="Termin eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveManual}><label>Service<select value={manual.serviceId} onChange={(e)=>setManual({...manual,serviceId:e.target.value})}>{services.map((item)=><option key={item.id} value={item.id}>{item.short}</option>)}</select></label><div className="form-pair"><label>Datum<input type="date" value={manual.date} onChange={(e)=>setManual({...manual,date:e.target.value})}/></label><label>Uhrzeit<select value={manual.time} onChange={(e)=>setManual({...manual,time:e.target.value})}>{manualSlots.map((time)=><option key={time}>{time}</option>)}</select></label></div>{!manualSlots.length&&<p className="form-warning">An diesem Tag ist für den Service kein Termin frei.</p>}<div className="form-pair"><label>Vorname<input required value={manual.firstName} onChange={(e)=>setManual({...manual,firstName:e.target.value})}/></label><label>Nachname<input required value={manual.lastName} onChange={(e)=>setManual({...manual,lastName:e.target.value})}/></label></div><label>Telefon <span>optional</span><input value={manual.phone} onChange={(e)=>setManual({...manual,phone:e.target.value})}/></label><label>Notiz <span>optional</span><textarea value={manual.note} onChange={(e)=>setManual({...manual,note:e.target.value})}/></label><button className="sheet-primary" disabled={!manual.time}>Termin speichern</button></form></AdminSheet>}
+    {sheet==='free-day'&&<AdminSheet title="Freien Tag eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveFreeDay}><label>Datum<input type="date" value={freeDay.date} onChange={(e)=>setFreeDay({...freeDay,date:e.target.value})}/></label><label>Grund<select value={freeDay.reason} onChange={(e)=>setFreeDay({...freeDay,reason:e.target.value})}><option>Frei</option><option>Urlaub</option><option>Krank</option><option>Fortbildung</option><option>Privater Termin</option></select></label><p className="sheet-note">Der Tag verschwindet sofort aus der Online-Buchung. Bestehende Termine müssen vorher verschoben oder storniert werden.</p><button className="sheet-primary">Tag blockieren</button></form></AdminSheet>}
+    {sheet==='details'&&selectedBooking&&<AdminSheet title="Termindetails" onClose={()=>setSheet(null)}><div className="appointment-detail"><div className="detail-person"><span>{selectedBooking.firstName[0]}{selectedBooking.lastName[0]}</span><div><h3>{selectedBooking.firstName} {selectedBooking.lastName}</h3><p>{selectedBooking.phone||'Keine Telefonnummer'}</p></div></div><dl><div><dt>Zeit</dt><dd>{selectedBooking.startsAt.slice(11,16)} Uhr</dd></div><div><dt>Service</dt><dd>{selectedBooking.serviceName}</dd></div><div><dt>Buchung</dt><dd>{selectedBooking.paymentStatus==='manual'?'Manuell eingetragen':'Online · 30 € angezahlt'}</dd></div>{selectedBooking.note&&<div><dt>Notiz</dt><dd>{selectedBooking.note}</dd></div>}</dl><button className="sheet-secondary" onClick={()=>{setMove({date:selectedBooking.startsAt.slice(0,10),time:''});setSheet('move');}}><CalendarBlank size={17}/> Termin verschieben</button><button className="sheet-danger" onClick={()=>cancelAppointment(selectedBooking.id)}><Trash size={17}/> Termin stornieren</button></div></AdminSheet>}
+    {sheet==='move'&&selectedBooking&&<AdminSheet title="Termin verschieben" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveMove}><p className="sheet-note">{selectedBooking.firstName} {selectedBooking.lastName} · {selectedBooking.serviceShort}</p><label>Neues Datum<input type="date" value={move.date} onChange={(e)=>setMove({...move,date:e.target.value})}/></label><label>Freie Uhrzeit<select value={move.time} onChange={(e)=>setMove({...move,time:e.target.value})}>{moveSlots.map((time)=><option key={time}>{time}</option>)}</select></label>{!moveSlots.length&&<p className="form-warning">An diesem Tag ist kein passender Termin frei.</p>}<button className="sheet-primary" disabled={!move.time}>Verschieben</button></form></AdminSheet>}
+    {sheet==='notifications'&&<AdminSheet title="Benachrichtigungen" onClose={()=>setSheet(null)}><div className="notification-list">{notifications.length?notifications.map((item)=><article key={item.id} className={!item.readAt?'unread':''}><span><Bell size={17}/></span><div><strong>{item.title}</strong><p>{item.message}</p><small>{new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(item.createdAt))}</small></div></article>):<div className="empty-notifications">Keine neuen Benachrichtigungen.</div>}</div></AdminSheet>}
+  </main>;
+}
+
+export function App(){const[admin,setAdmin]=useState(false);return admin?<ProtectedAdmin onExit={()=>setAdmin(false)}/>:<BookingApp onAdmin={()=>setAdmin(true)}/>;}
