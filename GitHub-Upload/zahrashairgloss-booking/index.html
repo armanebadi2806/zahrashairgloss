@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#181818" />
+    <meta name="description" content="Online-Terminbuchung bei Zahrashairgloss" />
+    <title>Termin buchen | Zahrashairgloss</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      if (window.location.protocol === 'file:') {
+        window.location.replace('http://127.0.0.1:5173/');
+      } else {
+        import('/src/main.jsx');
+      }
+    </script>
+  </body>
+</html>
