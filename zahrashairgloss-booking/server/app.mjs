@@ -45,8 +45,8 @@ async function api(req,res,url){
 const mime={'.html':'text/html','.js':'text/javascript','.css':'text/css','.png':'image/png','.jpg':'image/jpeg','.svg':'image/svg+xml'};
 function staticFile(res,pathname){const dist=join(root,'dist');let file=join(dist,pathname==='/'?'index.html':pathname);if(!file.startsWith(dist)||!existsSync(file)||statSync(file).isDirectory())file=join(dist,'index.html');res.writeHead(200,{'Content-Type':`${mime[extname(file)]||'application/octet-stream'}; charset=utf-8`});createReadStream(file).pipe(res);}
 
-export function startServer({port=Number(process.env.PORT||8787),host='127.0.0.1',serveFrontend=process.env.SERVE_FRONTEND==='true'}={}){
+export function startServer({port=Number(process.env.PORT||8787),host=process.env.HOST||'0.0.0.0',serveFrontend=process.env.SERVE_FRONTEND==='true'}={}){
   const server=createServer(async(req,res)=>{const url=new URL(req.url,`http://${req.headers.host||`${host}:${port}`}`);if(url.pathname.startsWith('/api/'))return api(req,res,url);if(serveFrontend)return staticFile(res,url.pathname);return send(res,404,{error:'Frontend läuft über Vite.'});});
   return new Promise((resolveServer)=>server.listen(port,host,()=>resolveServer(server)));
 }
-if(process.argv[1]===fileURLToPath(import.meta.url))startServer().then(()=>console.log(`Zahrashairgloss API: http://127.0.0.1:${process.env.PORT||8787}`));
+if(process.argv[1]===fileURLToPath(import.meta.url))startServer().then(()=>console.log(`Zahrashairgloss API läuft auf Port ${process.env.PORT||8787}`));
