@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: zahrashairgloss
+    runtime: node
+    plan: free
+    region: frankfurt
+    rootDir: zahrashairgloss-booking
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/config
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: ADMIN_PASSWORD_HASH
+        sync: false
