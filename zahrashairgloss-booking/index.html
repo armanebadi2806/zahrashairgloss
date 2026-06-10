@@ -6,11 +6,20 @@
     <meta name="theme-color" content="#181818" />
     <meta name="description" content="Online-Terminbuchung bei Zahrashairgloss" />
     <title>Termin buchen | Zahrashairgloss</title>
+    <style>
+      html, body { margin: 0; min-height: 100%; background: #181818; }
+      #local-start { display: none; min-height: 100vh; padding: 28px; box-sizing: border-box; place-items: center; color: #fff; font-family: Arial, sans-serif; text-align: center; }
+      #local-start div { max-width: 420px; }
+      #local-start strong { display: block; margin-bottom: 12px; font: 42px/1.05 Georgia, serif; }
+      #local-start p { margin: 0; color: #aaa5a0; font-size: 14px; line-height: 1.6; }
+    </style>
   </head>
   <body>
+    <div id="local-start"><div><strong>Zahrashairgloss</strong><p>Die Buchungsseite wird gestartet. Falls sie nicht erscheint, öffne bitte „Zahrashairgloss starten.command“.</p></div></div>
     <div id="root"></div>
     <script type="module">
       if (window.location.protocol === 'file:') {
+        document.getElementById('local-start').style.display = 'grid';
         window.location.replace('http://127.0.0.1:5173/');
       } else {
         import('/src/main.jsx');

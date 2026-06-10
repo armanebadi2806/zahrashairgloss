@@ -1,7 +1,40 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowRight, Bell, CalendarBlank, CaretLeft, CaretRight, Check, Clock, Plus, Scissors, Sparkle, Trash, User, X } from '@phosphor-icons/react';
 
+const STATIC_PREVIEW = window.location.hostname.endsWith('github.io');
+const asset = (path) => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`;
+const previewServices = [
+  {id:'balayage',name:'Balayage inkl. Pflege, Schnitt und Styling',short:'Balayage Komplett',duration:240},
+  {id:'cut',name:'Schneiden',short:'Schneiden',duration:60},
+  {id:'gloss',name:'Glossing',short:'Glossing',duration:60},
+  {id:'gloss-cut',name:'Glossing & Schnitt',short:'Glossing & Schnitt',duration:60},
+  {id:'colour',name:'Colouring',short:'Colouring',duration:60},
+];
+const previewDates = () => {
+  const dates=[];
+  const cursor=new Date();
+  while(dates.length<6){cursor.setDate(cursor.getDate()+1);if(cursor.getDay()!==0)dates.push(cursor.toISOString().slice(0,10));}
+  return dates;
+};
+const previewApi = (path, options) => {
+  if(path==='/api/services')return {services:previewServices};
+  if(path==='/api/config')return {depositCents:3000,holdMinutes:10,termsVersion:'preview',timezone:'Europe/Berlin'};
+  if(path.startsWith('/api/dates'))return {dates:previewDates()};
+  if(path.startsWith('/api/availability')){
+    const params=new URLSearchParams(path.split('?')[1]);
+    const service=params.get('serviceId');
+    const weekday=new Date(`${params.get('date')}T12:00:00`).getDay();
+    if(service==='balayage')return {slots:weekday===6?['09:30','13:30']:['10:00','14:00']};
+    return {slots:weekday===6?['10:45','14:45']:['11:30','15:30']};
+  }
+  if(path==='/api/holds'&&options?.method==='POST')return {hold:{id:'preview',expiresAt:new Date(Date.now()+600000).toISOString()}};
+  if(path.startsWith('/api/holds/')&&options?.method==='DELETE')return {released:true};
+  if(path==='/api/admin/session')return {authenticated:false,configured:false};
+  throw new Error('Dies ist die GitHub-Vorschau. Echte Buchungen werden nach Aktivierung des Servers möglich.');
+};
+
 const api = async (path, options) => {
+  if(STATIC_PREVIEW)return previewApi(path,options);
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || 'Die Anfrage ist fehlgeschlagen.');
@@ -27,7 +60,7 @@ function dateView(value) {
 
 function Summary({ service, date, slot, onEdit }) {
   return <aside className="booking-summary">
-    <div className="brand-lockup"><img src="/assets/zahra-portrait.jpg" alt="Zahra von Zahrashairgloss" /><div><span>Bei Zahra</span><div className="brand">Zahrashairgloss</div></div></div>
+    <div className="brand-lockup"><img src={asset('/assets/zahra-portrait.jpg')} alt="Zahra von Zahrashairgloss" /><div><span>Bei Zahra</span><div className="brand">Zahrashairgloss</div></div></div>
     <div className="summary-title"><span>Online-Buchung</span><h1>Dein Termin.<br />Einfach gebucht.</h1></div>
     <div className="summary-details">
       <div><Scissors size={19}/><p><span>Service</span><strong>{service ? service.short : 'Noch nicht gewählt'}</strong>{service&&<small>{durationLabel(service.duration)}</small>}</p>{service&&<button onClick={()=>onEdit(1)}>Ändern</button>}</div>
@@ -77,6 +110,7 @@ function BookingApp({ onAdmin }) {
     <section className="flow-panel">
       <button className="admin-entry" onClick={onAdmin}>Admin</button>
       <div className="progress-dots" aria-label={`Schritt ${step} von 4`}>{[1,2,3,4].map((item)=><span key={item} className={item<=step?'active':''}/>)}</div>
+      {STATIC_PREVIEW&&<div className="preview-notice">Online-Vorschau · Buchungen noch nicht aktiv</div>}
       {error&&<div className="flow-error" role="alert">{error}</div>}
 
       {step===1&&<div className="flow-content"><StepHeader step="1" title="Was darf es sein?" text="Wähle den gewünschten Service."/>
@@ -119,7 +153,7 @@ function AdminLogin({ onAuthenticated, onExit }) {
   const [error,setError]=useState('');
   const [loading,setLoading]=useState(false);
   const submit=async(event)=>{event.preventDefault();setLoading(true);setError('');try{await api('/api/admin/login',{method:'POST',body:JSON.stringify({password})});onAuthenticated();}catch(err){setError(err.message);setPassword('');}finally{setLoading(false);}};
-  return <main className="admin-login"><button className="login-exit" onClick={onExit}><ArrowLeft size={18}/> Buchungsseite</button><section><img src="/assets/zahra-portrait.jpg" alt="Zahra"/><span>Geschützter Bereich</span><h1>Willkommen,<br/>Zahra.</h1><p>Melde dich an, um Termine und freie Tage zu verwalten.</p><form onSubmit={submit}><label>Passwort<input autoFocus type="password" value={password} onChange={(event)=>setPassword(event.target.value)} autoComplete="current-password" placeholder="Dein Admin-Passwort"/></label>{error&&<div className="login-error" role="alert">{error}</div>}<button disabled={loading||!password}>{loading?'Anmeldung läuft …':'Sicher anmelden'} <ArrowRight size={18}/></button></form><small>Die Sitzung bleibt auf diesem Gerät 12 Stunden aktiv.</small></section></main>;
+  return <main className="admin-login"><button className="login-exit" onClick={onExit}><ArrowLeft size={18}/> Buchungsseite</button><section><img src={asset('/assets/zahra-portrait.jpg')} alt="Zahra"/><span>Geschützter Bereich</span><h1>Willkommen,<br/>Zahra.</h1><p>Melde dich an, um Termine und freie Tage zu verwalten.</p><form onSubmit={submit}><label>Passwort<input autoFocus type="password" value={password} onChange={(event)=>setPassword(event.target.value)} autoComplete="current-password" placeholder="Dein Admin-Passwort"/></label>{error&&<div className="login-error" role="alert">{error}</div>}<button disabled={loading||!password}>{loading?'Anmeldung läuft …':'Sicher anmelden'} <ArrowRight size={18}/></button></form><small>Die Sitzung bleibt auf diesem Gerät 12 Stunden aktiv.</small></section></main>;
 }
 
 function ProtectedAdmin({ onExit }) {
@@ -170,7 +204,7 @@ function Admin({ onExit, onLoggedOut }) {
   const logout=async()=>{await api('/api/admin/logout',{method:'POST',body:'{}'});onLoggedOut();};
 
   return <main className="admin-workspace">
-    <header className="mobile-admin-header"><div className="admin-profile"><img src="/assets/zahra-portrait.jpg" alt="Zahra"/><div><span>Dein Studio</span><strong>Zahrashairgloss</strong></div></div><div className="admin-header-actions"><button onClick={openNotifications} aria-label="Benachrichtigungen"><Bell size={21}/>{unread>0&&<i>{unread}</i>}</button><button onClick={logout} aria-label="Sicher abmelden"><ArrowRight size={21}/></button></div></header>
+    <header className="mobile-admin-header"><div className="admin-profile"><img src={asset('/assets/zahra-portrait.jpg')} alt="Zahra"/><div><span>Dein Studio</span><strong>Zahrashairgloss</strong></div></div><div className="admin-header-actions"><button onClick={openNotifications} aria-label="Benachrichtigungen"><Bell size={21}/>{unread>0&&<i>{unread}</i>}</button><button onClick={logout} aria-label="Sicher abmelden"><ArrowRight size={21}/></button></div></header>
     <section className="admin-content">
       {error&&<div className="admin-message error" role="alert">{error}<button onClick={()=>setError('')}><X size={15}/></button></div>}{notice&&<div className="admin-message success"><Check size={16}/>{notice}</div>}
       <div className="admin-greeting"><div><span className="eyebrow">Kalender</span><h1>Hallo Zahra.</h1><p>{dayBookings.length?`${dayBookings.length} ${dayBookings.length===1?'Termin':'Termine'} am ausgewählten Tag.`:'Der ausgewählte Tag ist noch frei.'}</p></div><button className="today-button" onClick={()=>{const today=new Date();setWeekStart(startMonday(today));setSelectedDate(isoDate(today));}}>Heute</button></div>
