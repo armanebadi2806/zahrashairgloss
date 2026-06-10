@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Zahrashairgloss Design QA</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #d8d8d8; font: 12px Arial, sans-serif; color: #222; }
+      header { height: 38px; display: grid; grid-template-columns: 1fr 1fr; align-items: center; background: #fff; border-bottom: 1px solid #aaa; }
+      header span { padding-left: 16px; text-transform: uppercase; letter-spacing: .12em; }
+      main { display: grid; grid-template-columns: 1fr 1fr; height: calc(100vh - 38px); gap: 2px; }
+      .reference { width: 100%; height: 100%; object-fit: contain; background: #fff; }
+      iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+    </style>
+  </head>
+  <body>
+    <header><span>Source: Pearl Editorial</span><span>Implementation: Booking Flow</span></header>
+    <main>
+      <img class="reference" src="/assets/pearl-editorial-reference.png" alt="Pearl Editorial reference" />
+      <iframe src="/" title="Zahrashairgloss booking implementation"></iframe>
+    </main>
+  </body>
+</html>
