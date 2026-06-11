@@ -5,6 +5,7 @@ const USE_SUPABASE = window.location.hostname.endsWith('github.io');
 const SUPABASE_URL = 'https://kpncmfikfggnnlprieti.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_UUac6eNn00yh7ZM5UsLZGw_U2BjRP4c';
 const ADMIN_EMAIL = 'dxpvtm8nx9@privaterelay.appleid.com';
+const PAYPAL_EMAIL = 'zahrashairgloas@gmail.com';
 const asset = (path) => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`;
 
 const sessionToken = () => window.localStorage.getItem('zahra_admin_token') || '';
@@ -30,6 +31,7 @@ const berlinIso = (value) => {
 const normalizeBooking = (item) => ({...item,serviceId:item.service_id,serviceName:item.service_name,serviceShort:item.service_short,startsAt:berlinIso(item.starts_at),endsAt:berlinIso(item.ends_at),firstName:item.first_name,lastName:item.last_name,paymentStatus:item.payment_status,depositCents:item.deposit_cents});
 const normalizeBlock = (item) => ({...item,startsAt:berlinIso(item.starts_at),endsAt:berlinIso(item.ends_at)});
 const normalizeNotification = (item) => ({...item,bookingId:item.booking_id,readAt:item.read_at,createdAt:item.created_at});
+const openPayPalSendMoney = () => window.open('https://www.paypal.com/us/digital-wallet/send-receive-money/send-money','_blank','noopener,noreferrer');
 
 const supabaseApi = async (path, options={}) => {
   const method=options.method||'GET';
@@ -133,7 +135,7 @@ function BookingApp({ onAdmin }) {
   const reserveSlot=async()=>{setError('');setLoading(true);try{const data=await api('/api/holds',{method:'POST',body:JSON.stringify({serviceId:service.id,date:date.value,time:slot})});setHold(data.hold);setStep(3);}catch(err){setError(err.message);const data=await api(`/api/availability?serviceId=${service.id}&date=${date.value}`);setSlots(data.slots);setSlot(null);}finally{setLoading(false);}};
   const updateCustomer=(field)=>(event)=>setCustomer((current)=>({...current,[field]:event.target.value}));
   const contactValid=customer.firstName.trim()&&customer.lastName.trim()&&customer.email.includes('@')&&customer.phone.trim();
-  const pay=async()=>{if(!depositTermsAccepted||!hold)return;setPayment('loading');setError('');try{await api('/api/bookings/confirm-demo-payment',{method:'POST',body:JSON.stringify({holdId:hold.id,customer,acceptedTermsVersion:termsVersion})});setPayment('success');}catch(err){setPayment('idle');setError(err.message);}};
+  const pay=async()=>{if(!depositTermsAccepted||!hold)return;setPayment('loading');setError('');try{await api('/api/bookings/confirm-demo-payment',{method:'POST',body:JSON.stringify({holdId:hold.id,customer,acceptedTermsVersion:termsVersion})});openPayPalSendMoney();setPayment('success');}catch(err){setPayment('idle');setError(err.message);}};
   const timeLeft=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
 
   return <main className="booking-shell">
@@ -162,10 +164,10 @@ function BookingApp({ onAdmin }) {
         <div className="final-summary"><div><span>Service</span><strong>{service?.name}</strong></div><div><span>Datum</span><strong>{date?.full}</strong></div><div><span>Uhrzeit</span><strong>{slot} Uhr</strong></div><div><span>Dauer</span><strong>{durationLabel(service?.duration)}</strong></div><div className="deposit-row"><span>Anzahlung</span><strong>30,00 €</strong></div></div>
         <div className="deposit-terms"><strong>Regelung zur Anzahlung</strong><p>Für die verbindliche Reservierung wird eine Anzahlung von 30,00 € fällig. Bei einer Stornierung durch die Kundin oder den Kunden wird die Anzahlung grundsätzlich nicht erstattet. Eine einmalige Umbuchung ist bis spätestens 24 Stunden vor Terminbeginn ohne erneute Anzahlung möglich; die bereits geleistete Anzahlung wird auf den Ersatztermin übertragen.</p><p>Sagt Zahrashairgloss den Termin ab und kann kein Ersatztermin vereinbart werden, wird die Anzahlung vollständig zurückerstattet. Zwingende gesetzliche Ansprüche bleiben unberührt.</p></div>
         <label className="terms-checkbox"><input type="checkbox" checked={depositTermsAccepted} onChange={(event)=>setDepositTermsAccepted(event.target.checked)}/><span>Ich habe die Regelung zur Anzahlung und Umbuchung gelesen und akzeptiere sie ausdrücklich.</span></label>
-        <button className="paypal pending-booking" onClick={pay} disabled={!depositTermsAccepted||payment==='loading'||seconds===0}>{payment==='loading'?'Termin wird gespeichert …':'Termin verbindlich buchen'}</button><p className="payment-note">Die Anzahlung wird als offen vermerkt. Zahra kann sie bis zur späteren PayPal-Anbindung manuell nachverfolgen.</p>
+        <button className="paypal pending-booking" onClick={pay} disabled={!depositTermsAccepted||payment==='loading'||seconds===0}>{payment==='loading'?'Termin wird gespeichert …':'Termin buchen und PayPal öffnen'}</button><p className="payment-note">Mit einem privaten Konto wird die Zahlung in PayPal manuell an {PAYPAL_EMAIL} gesendet. Wir öffnen dafür direkt den offiziellen PayPal-Senden-Flow.</p>
       </div>}
 
-      {payment==='success'&&<div className="success-view"><span className="success-mark"><Check size={28} weight="bold"/></span><span className="success-kicker">Termin bestätigt</span><h2>Wir sehen uns<br/>am {date?.date}. {date?.month}.</h2><p>{slot} Uhr · {service?.short}<br/>Die Buchung wurde gespeichert. Die Anzahlung von 30,00 € ist noch offen.</p><button onClick={()=>window.location.reload()}>Neue Buchung</button></div>}
+      {payment==='success'&&<div className="success-view"><span className="success-mark"><Check size={28} weight="bold"/></span><span className="success-kicker">Termin gespeichert</span><h2>Wir sehen uns<br/>am {date?.date}. {date?.month}.</h2><p>{slot} Uhr · {service?.short}<br/>Die 30,00 € Anzahlung wird in PayPal manuell an {PAYPAL_EMAIL} gesendet. Das ist die stabile Variante für ein privates Konto.</p><button onClick={openPayPalSendMoney}>PayPal jetzt öffnen</button><button onClick={()=>navigator.clipboard?.writeText(PAYPAL_EMAIL)} className="copy-paypal">E-Mail kopieren</button><button onClick={()=>window.location.reload()}>Neue Buchung</button></div>}
     </section>
   </main>;
 }
