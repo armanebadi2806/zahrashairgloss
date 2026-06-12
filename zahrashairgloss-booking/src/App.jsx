@@ -61,12 +61,7 @@ const supabaseApi = async (path, options={}) => {
   if(path==='/api/admin/blocks'&&method==='POST')return {block:{id:await rpc('admin_create_block',{p_date:payload.date,p_reason:payload.reason})}};
   if(path.startsWith('/api/admin/blocks/')&&method==='DELETE'){await rpc('admin_delete_block',{p_id:Number(path.split('/').pop())});return {deleted:true};}
   if(path.startsWith('/api/admin/bookings/')&&path.endsWith('/payment')&&method==='POST'){
-    const id=path.split('/')[4];
-    try{
-      await rpc('admin_mark_booking_paid',{p_id:id});
-    }catch{
-      await supabaseRequest(`/rest/v1/bookings?id=eq.${id}`,{method:'PATCH',body:{payment_status:'paid'}});
-    }
+    await rpc('admin_mark_booking_paid',{p_id:path.split('/')[4]});
     return {paid:true};
   }
   if(path.startsWith('/api/admin/bookings/')&&method==='DELETE'){await rpc('admin_cancel_booking',{p_id:path.split('/').pop()});return {cancelled:true};}
