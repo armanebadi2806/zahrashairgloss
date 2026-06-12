@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ArrowRight, Bell, CalendarBlank, CaretLeft, CaretRight, Check, Clock, Plus, Scissors, Sparkle, Trash, User, X } from '@phosphor-icons/react';
 
-const USE_SUPABASE = window.location.hostname.endsWith('github.io');
+const USE_SUPABASE = !['localhost', '127.0.0.1'].includes(window.location.hostname);
 const SUPABASE_URL = 'https://kpncmfikfggnnlprieti.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_UUac6eNn00yh7ZM5UsLZGw_U2BjRP4c';
 const ADMIN_EMAIL = 'dxpvtm8nx9@privaterelay.appleid.com';
