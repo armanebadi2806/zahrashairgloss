@@ -69,7 +69,7 @@ const supabaseApi = async (path, options={}) => {
       if(!isMissingFunctionError(error)) throw error;
       await supabaseRequest(`/rest/v1/bookings?id=eq.${id}&payment_status=eq.pending`,{
         method:'PATCH',
-        body:{payment_status:'paid',confirmation_status:'confirmed',confirmed_at:new Date().toISOString()},
+        body:{payment_status:'paid'},
       });
     }
     return {paid:true};
