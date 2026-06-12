@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { cleanupExpiredHolds } from './database.mjs';
+import { cleanupExpiredHolds, cleanupExpiredPendingBookings } from './database.mjs';
 
 const BERLIN_OFFSET = '+02:00';
 export const TERMS_VERSION = 'deposit-2026-06-10-v1';
@@ -33,6 +33,7 @@ export function listServices(db) {
 
 export function listBookableDates(db, { serviceId, from = new Date(), limit = 6, searchDays = 90 } = {}) {
   if (!serviceId) throw new Error('Bitte zuerst einen Service wählen.');
+  cleanupExpiredPendingBookings(db, from);
   const weekdays = new Set(db.prepare('SELECT weekday FROM working_hours WHERE active=1').all().map((row) => row.weekday));
   const cursor = new Date(from); cursor.setUTCHours(12, 0, 0, 0);
   const dates = [];
@@ -49,6 +50,7 @@ export function listBookableDates(db, { serviceId, from = new Date(), limit = 6,
 export function listAvailableSlots(db, serviceId, date, now = new Date()) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error('Ungültiges Datum.');
   cleanupExpiredHolds(db, now);
+  cleanupExpiredPendingBookings(db, now);
   const service = db.prepare('SELECT duration_minutes AS duration FROM services WHERE id=? AND active=1').get(serviceId);
   if (!service) throw new Error('Unbekannter Service.');
   const weekday = new Date(`${date}T12:00:00Z`).getUTCDay() || 7;
@@ -99,7 +101,7 @@ export function confirmDemoPayment(db, { holdId, customer, acceptedTermsVersion 
     if (!hold) throw new Error('Die Reservierung ist abgelaufen. Bitte wähle einen neuen Termin.');
     const booking={id:randomUUID(),paymentReference:`DEMO-${randomUUID()}`,createdAt:now.toISOString()};
     db.prepare(`INSERT INTO bookings(id,hold_id,service_id,starts_at,ends_at,first_name,last_name,email,phone,note,status,deposit_cents,payment_status,payment_reference,terms_version,terms_accepted_at,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,'confirmed',3000,'demo_paid',?,?,?,?)`).run(
+      VALUES(?,?,?,?,?,?,?,?,?,?,'confirmed',3000,'pending',?,?,?,?)`).run(
       booking.id,hold.id,hold.service_id,hold.starts_at,hold.ends_at,customer.firstName.trim(),customer.lastName.trim(),
       customer.email.trim(),customer.phone.trim(),customer.note?.trim()||null,booking.paymentReference,acceptedTermsVersion,now.toISOString(),booking.createdAt);
     db.prepare(`UPDATE holds SET status='converted' WHERE id=?`).run(hold.id); db.exec('COMMIT');
@@ -111,6 +113,7 @@ export function confirmDemoPayment(db, { holdId, customer, acceptedTermsVersion 
 }
 
 export function listBookings(db,date) {
+  cleanupExpiredPendingBookings(db);
   return db.prepare(`SELECT b.id,b.starts_at AS startsAt,b.ends_at AS endsAt,b.first_name AS firstName,b.last_name AS lastName,
     b.payment_status AS paymentStatus,b.deposit_cents AS depositCents,s.name AS serviceName,s.duration_minutes AS duration
     FROM bookings b JOIN services s ON s.id=b.service_id WHERE b.status='confirmed' AND b.starts_at BETWEEN ? AND ? ORDER BY b.starts_at`)
@@ -118,6 +121,7 @@ export function listBookings(db,date) {
 }
 
 export function listBookingsRange(db,from,to) {
+  cleanupExpiredPendingBookings(db);
   return db.prepare(`SELECT b.id,b.starts_at AS startsAt,b.ends_at AS endsAt,b.first_name AS firstName,b.last_name AS lastName,
     b.email,b.phone,b.note,b.status,b.payment_status AS paymentStatus,b.deposit_cents AS depositCents,
     s.id AS serviceId,s.name AS serviceName,s.short_name AS serviceShort,s.duration_minutes AS duration
@@ -132,6 +136,7 @@ export function listBlockedPeriods(db,from,to) {
 }
 
 export function createBlockedPeriod(db,{date,reason='Frei'}) {
+  cleanupExpiredPendingBookings(db);
   if(!/^\d{4}-\d{2}-\d{2}$/.test(date||''))throw new Error('Bitte einen gültigen freien Tag wählen.');
   const existing=db.prepare(`SELECT COUNT(*) AS count FROM bookings WHERE status='confirmed' AND starts_at < ? AND ends_at > ?`)
     .get(localIso(date,'23:59'),localIso(date,'00:00')).count;
@@ -147,6 +152,7 @@ export function deleteBlockedPeriod(db,id) {
 
 export function createManualBooking(db,{serviceId,date,time,customer},now=new Date()) {
   for(const field of ['firstName','lastName'])if(!customer?.[field]?.trim())throw new Error('Vor- und Nachname sind erforderlich.');
+  cleanupExpiredPendingBookings(db,now);
   db.exec('BEGIN IMMEDIATE');
   try{
     if(!listAvailableSlots(db,serviceId,date,now).includes(time))throw new Error('Dieser Termin ist nicht mehr verfügbar.');
@@ -165,11 +171,13 @@ export function createManualBooking(db,{serviceId,date,time,customer},now=new Da
 }
 
 export function cancelBooking(db,id) {
+  cleanupExpiredPendingBookings(db);
   const result=db.prepare(`UPDATE bookings SET status='cancelled' WHERE id=? AND status='confirmed'`).run(id);
   if(!result.changes)throw new Error('Termin wurde nicht gefunden.');
 }
 
 export function rescheduleBooking(db,id,{date,time},now=new Date()) {
+  cleanupExpiredPendingBookings(db,now);
   db.exec('BEGIN IMMEDIATE');
   try{
     const booking=db.prepare(`SELECT id,service_id AS serviceId FROM bookings WHERE id=? AND status='confirmed'`).get(id);
@@ -186,6 +194,7 @@ export function rescheduleBooking(db,id,{date,time},now=new Date()) {
 }
 
 export function listNotifications(db) {
+  cleanupExpiredPendingBookings(db);
   return db.prepare(`SELECT id,booking_id AS bookingId,type,title,message,read_at AS readAt,created_at AS createdAt
     FROM notifications ORDER BY created_at DESC LIMIT 30`).all();
 }

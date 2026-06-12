@@ -82,3 +82,8 @@ export function createDatabase(filename) {
 export function cleanupExpiredHolds(db, now = new Date()) {
   db.prepare(`UPDATE holds SET status='expired' WHERE status='active' AND expires_at <= ?`).run(now.toISOString());
 }
+
+export function cleanupExpiredPendingBookings(db, now = new Date()) {
+  const cutoff = new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString();
+  db.prepare(`UPDATE bookings SET status='cancelled' WHERE status='confirmed' AND payment_status='pending' AND created_at <= ?`).run(cutoff);
+}
