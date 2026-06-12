@@ -121,6 +121,7 @@ function BookingApp({ onAdmin }) {
   const [payment,setPayment]=useState('idle');
   const [termsVersion,setTermsVersion]=useState('');
   const [depositTermsAccepted,setDepositTermsAccepted]=useState(false);
+  const [paypalEmailCopied,setPaypalEmailCopied]=useState(false);
   const [customer,setCustomer]=useState({firstName:'',lastName:'',email:'',phone:'',note:''});
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
@@ -136,7 +137,8 @@ function BookingApp({ onAdmin }) {
   const reserveSlot=async()=>{setError('');setLoading(true);try{const data=await api('/api/holds',{method:'POST',body:JSON.stringify({serviceId:service.id,date:date.value,time:slot})});setHold(data.hold);setStep(3);}catch(err){setError(err.message);const data=await api(`/api/availability?serviceId=${service.id}&date=${date.value}`);setSlots(data.slots);setSlot(null);}finally{setLoading(false);}};
   const updateCustomer=(field)=>(event)=>setCustomer((current)=>({...current,[field]:event.target.value}));
   const contactValid=customer.firstName.trim()&&customer.lastName.trim()&&customer.email.includes('@')&&customer.phone.trim();
-  const pay=async()=>{if(!depositTermsAccepted||!hold)return;setPayment('loading');setError('');try{await api('/api/bookings/confirm-demo-payment',{method:'POST',body:JSON.stringify({holdId:hold.id,customer,acceptedTermsVersion:termsVersion})});openPayPalSendMoney();setPayment('success');}catch(err){setPayment('idle');setError(err.message);}};
+  const pay=async()=>{if(!depositTermsAccepted||!hold)return;setPayment('loading');setError('');try{await api('/api/bookings/confirm-demo-payment',{method:'POST',body:JSON.stringify({holdId:hold.id,customer,acceptedTermsVersion:termsVersion})});setPayment('success');}catch(err){setPayment('idle');setError(err.message);}};
+  const copyPayPalEmail=async()=>{try{await navigator.clipboard.writeText(PAYPAL_EMAIL);setPaypalEmailCopied(true);window.setTimeout(()=>setPaypalEmailCopied(false),2200);}catch{setError(`Bitte kopiere die PayPal-Adresse manuell: ${PAYPAL_EMAIL}`);}};
   const timeLeft=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
 
   return <main className="booking-shell">
@@ -161,14 +163,33 @@ function BookingApp({ onAdmin }) {
         <button className="continue" disabled={!contactValid} onClick={()=>setStep(4)}>Weiter zur Bestätigung <ArrowRight size={18}/></button>
       </div>}
 
-      {step===4&&payment!=='success'&&<div className="flow-content"><button className="inline-back" onClick={()=>setStep(3)}><ArrowLeft size={17}/> Deine Daten</button><div className="reservation-bar"><Clock size={18}/><span>Serverseitig für dich reserviert</span><strong>{timeLeft}</strong></div><StepHeader step="4" title="Termin bestätigen" text="Dein Termin wird verbindlich gespeichert. Die 30-Euro-Anzahlung bleibt bis zur PayPal-Anbindung offen."/>
+      {step===4&&payment!=='success'&&<div className="flow-content"><button className="inline-back" onClick={()=>setStep(3)}><ArrowLeft size={17}/> Deine Daten</button><div className="reservation-bar"><Clock size={18}/><span>Serverseitig für dich reserviert</span><strong>{timeLeft}</strong></div><StepHeader step="4" title="Termin vormerken" text="Nach dem Vormerken hast du 2 Stunden Zeit, die Anzahlung von 30 Euro per PayPal zu senden."/>
         <div className="final-summary"><div><span>Service</span><strong>{service?.name}</strong></div><div><span>Datum</span><strong>{date?.full}</strong></div><div><span>Uhrzeit</span><strong>{slot} Uhr</strong></div><div><span>Dauer</span><strong>{durationLabel(service?.duration)}</strong></div><div className="deposit-row"><span>Anzahlung</span><strong>30,00 €</strong></div></div>
         <div className="deposit-terms"><strong>Regelung zur Anzahlung</strong><p>Für die verbindliche Reservierung wird eine Anzahlung von 30,00 € fällig. Die Zahlung kann per PayPal an {PAYPAL_EMAIL} gesendet werden. Geht die Anzahlung nicht innerhalb von 2 Stunden nach der Buchung ein, wird der Termin automatisch storniert. Eine einmalige Umbuchung ist bis spätestens 24 Stunden vor Terminbeginn ohne erneute Anzahlung möglich; die bereits geleistete Anzahlung wird auf den Ersatztermin übertragen.</p><p>Sagt Zahrashairgloss den Termin ab und kann kein Ersatztermin vereinbart werden, wird die Anzahlung vollständig zurückerstattet. Zwingende gesetzliche Ansprüche bleiben unberührt.</p></div>
         <label className="terms-checkbox"><input type="checkbox" checked={depositTermsAccepted} onChange={(event)=>setDepositTermsAccepted(event.target.checked)}/><span>Ich habe die Anzahlung, die 2-Stunden-Frist und die Umbuchungsregel gelesen und bestätige sie ausdrücklich.</span></label>
-        <button className="paypal pending-booking" onClick={pay} disabled={!depositTermsAccepted||payment==='loading'||seconds===0}>{payment==='loading'?'Termin wird gespeichert …':'Termin buchen und PayPal öffnen'}</button><p className="payment-note">Die Anzahlung wird nach der Buchung per PayPal-QR-Code an {PAYPAL_EMAIL} gesendet.</p>
+        <button className="paypal pending-booking" onClick={pay} disabled={!depositTermsAccepted||payment==='loading'||seconds===0}>{payment==='loading'?'Termin wird vorgemerkt …':'Termin vormerken'}</button><p className="payment-note">Danach siehst du direkt den PayPal-QR-Code und alle Zahlungsdaten.</p>
       </div>}
 
-      {payment==='success'&&<div className="success-view"><span className="success-mark"><Check size={28} weight="bold"/></span><span className="success-kicker">Termin gespeichert</span><h2>Wir sehen uns<br/>am {date?.date}. {date?.month}.</h2><p>{slot} Uhr · {service?.short}<br/>Die Anzahlung wird per PayPal an {PAYPAL_EMAIL} gesendet. Geht sie nicht innerhalb von 2 Stunden ein, wird der Termin automatisch storniert.</p><img className="paypal-qr" src={asset('/assets/paypal-qr.jpg')} alt="PayPal QR-Code für die Anzahlung" /><button onClick={openPayPalSendMoney}>PayPal jetzt öffnen</button><button onClick={()=>navigator.clipboard?.writeText(PAYPAL_EMAIL)} className="copy-paypal">E-Mail kopieren</button><button onClick={()=>window.location.reload()}>Neue Buchung</button></div>}
+      {payment==='success'&&<div className="success-view pending-payment-view">
+        <header className="pending-payment-hero">
+          <span className="pending-status-icon"><Clock size={27} weight="bold"/></span>
+          <span className="success-kicker">Termin vorgemerkt</span>
+          <h2>Noch nicht<br/>bestätigt.</h2>
+          <p>Dein Termin ist eingetragen, wird aber erst nach Eingang der Anzahlung verbindlich bestätigt.</p>
+        </header>
+        <section className="payment-action-card" aria-labelledby="deposit-title">
+          <div className="payment-amount"><span id="deposit-title">Jetzt per PayPal anzahlen</span><strong>30,00 €</strong></div>
+          <div className="payment-deadline"><Clock size={20} weight="bold"/><p><strong>Zahlungsfrist: 2 Stunden</strong><span>Ohne Zahlungseingang wird der vorgemerkte Termin automatisch storniert.</span></p></div>
+          <div className="paypal-payment-layout">
+            <img className="paypal-qr" src={asset('/assets/paypal-qr.jpg')} alt="PayPal QR-Code für die Anzahlung von 30 Euro" />
+            <div className="paypal-payment-copy"><span>PayPal-Empfänger</span><strong>{PAYPAL_EMAIL}</strong><ol><li>PayPal öffnen oder QR-Code scannen</li><li>30,00 € senden und deinen Namen angeben</li><li>Zahra prüft die Zahlung und bestätigt den Termin</li></ol><button className="paypal-primary" onClick={openPayPalSendMoney}>30 € mit PayPal anzahlen <ArrowRight size={17}/></button><button className="copy-paypal" onClick={copyPayPalEmail}>{paypalEmailCopied?'E-Mail kopiert':'PayPal-E-Mail kopieren'}</button></div>
+          </div>
+        </section>
+        <section className="pending-appointment-card"><div><span>Vorgemerkter Termin</span><strong>{date?.full}, {slot} Uhr</strong><small>{service?.short}</small></div><span className="pending-badge">Anzahlung offen</span></section>
+        <div className="confirmation-progress" aria-label="Status der Terminbestätigung"><div className="done"><i><Check size={13} weight="bold"/></i><span>Termin vorgemerkt</span></div><div className="current"><i>2</i><span>30 € anzahlen</span></div><div><i>3</i><span>Bestätigung durch Zahra</span></div></div>
+        <p className="confirmation-note">Erst wenn Zahra den Zahlungseingang geprüft hat, ist dein Termin bestätigt.</p>
+        <button className="new-booking-link" onClick={()=>window.location.reload()}>Weitere Buchung beginnen</button>
+      </div>}
     </section>
   </main>;
 }
