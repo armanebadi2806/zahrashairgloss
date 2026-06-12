@@ -37,6 +37,25 @@ const supabaseRequest = async (pathname, { method='GET', body, token=sessionToke
   return data;
 };
 const rpc = (name, params={}, token) => supabaseRequest(`/rest/v1/rpc/${name}`, {method:'POST',body:params,token});
+const invokeEdgeFunction = async (name, { method='POST', body, token=sessionToken() }={}) => {
+  const response = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
+    method,
+    headers: {
+      apikey: SUPABASE_KEY,
+      Authorization: `Bearer ${token || SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); }
+    catch { data = { message: text }; }
+  }
+  if (!response.ok) throw new Error(data?.message || 'Die Anfrage ist fehlgeschlagen.');
+  return data;
+};
 const berlinIso = (value) => {
   const parts=Object.fromEntries(new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Berlin',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(value)).filter((part)=>part.type!=='literal').map((part)=>[part.type,part.value]));
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
@@ -64,7 +83,15 @@ const supabaseApi = async (path, options={}) => {
   if(path.startsWith('/api/availability')){const p=new URLSearchParams(path.split('?')[1]);const rows=await rpc('get_available_slots',{p_service_id:p.get('serviceId'),p_date:p.get('date')});return {slots:rows.map((row)=>row.slot_time)};}
   if(path==='/api/holds'&&method==='POST')return {hold:await rpc('create_hold',{p_service_id:payload.serviceId,p_date:payload.date,p_time:payload.time})};
   if(path.startsWith('/api/holds/')&&method==='DELETE'){await rpc('release_hold',{p_hold_id:path.split('/').pop()});return {released:true};}
-  if(path==='/api/bookings/confirm-demo-payment'&&method==='POST')return {booking:await rpc('confirm_booking',{p_hold_id:payload.holdId,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email,p_phone:payload.customer.phone,p_note:payload.customer.note||'',p_terms_version:payload.acceptedTermsVersion})};
+  if(path==='/api/bookings/confirm-demo-payment'&&method==='POST'){
+    const booking = await rpc('confirm_booking',{p_hold_id:payload.holdId,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email,p_phone:payload.customer.phone,p_note:payload.customer.note||'',p_terms_version:payload.acceptedTermsVersion});
+    try{
+      await invokeEdgeFunction('send-booking-reservation-confirmation',{body:{bookingId:booking.id}});
+      return {booking,emailSent:true};
+    }catch(error){
+      return {booking,emailSent:false,emailError:error.message};
+    }
+  }
   if(path==='/api/admin/login'&&method==='POST'){
     const auth=await supabaseRequest('/auth/v1/token?grant_type=password',{method:'POST',body:{email:ADMIN_EMAIL,password:payload.password},token:SUPABASE_KEY});
     window.localStorage.setItem('zahra_admin_token',auth.access_token);return {authenticated:true};
@@ -83,6 +110,12 @@ const supabaseApi = async (path, options={}) => {
     const id=path.split('/')[4];
     try{
       await rpc('admin_mark_booking_paid',{p_id:id});
+      try{
+        await invokeEdgeFunction('send-booking-final-confirmation',{body:{bookingId:id}});
+        return {paid:true,emailSent:true};
+      }catch(error){
+        return {paid:true,emailSent:false,emailError:error.message};
+      }
     }catch(error){
       if(!isMissingFunctionError(error) && !isBlockedUpdateError(error)) throw error;
       markBookingConfirmedLocally(id);
@@ -150,6 +183,7 @@ function BookingApp({ onAdmin }) {
   const [termsVersion,setTermsVersion]=useState('');
   const [depositTermsAccepted,setDepositTermsAccepted]=useState(false);
   const [paypalEmailCopied,setPaypalEmailCopied]=useState(false);
+  const [reservationEmailWarning,setReservationEmailWarning]=useState('');
   const [customer,setCustomer]=useState({firstName:'',lastName:'',email:'',phone:'',note:''});
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
@@ -165,7 +199,7 @@ function BookingApp({ onAdmin }) {
   const reserveSlot=async()=>{setError('');setLoading(true);try{const data=await api('/api/holds',{method:'POST',body:JSON.stringify({serviceId:service.id,date:date.value,time:slot})});setHold(data.hold);setStep(3);}catch(err){setError(err.message);const data=await api(`/api/availability?serviceId=${service.id}&date=${date.value}`);setSlots(data.slots);setSlot(null);}finally{setLoading(false);}};
   const updateCustomer=(field)=>(event)=>setCustomer((current)=>({...current,[field]:event.target.value}));
   const contactValid=customer.firstName.trim()&&customer.lastName.trim()&&customer.email.includes('@')&&customer.phone.trim();
-  const pay=async()=>{if(!depositTermsAccepted||!hold)return;setPayment('loading');setError('');try{await api('/api/bookings/confirm-demo-payment',{method:'POST',body:JSON.stringify({holdId:hold.id,customer,acceptedTermsVersion:termsVersion})});setPayment('success');}catch(err){setPayment('idle');setError(err.message);}};
+  const pay=async()=>{if(!depositTermsAccepted||!hold)return;setPayment('loading');setError('');setReservationEmailWarning('');try{const result=await api('/api/bookings/confirm-demo-payment',{method:'POST',body:JSON.stringify({holdId:hold.id,customer,acceptedTermsVersion:termsVersion})});if(result?.emailSent===false)setReservationEmailWarning('Die Reservierungs-Mail konnte gerade nicht gesendet werden. Der Termin ist trotzdem vorgemerkt.');setPayment('success');}catch(err){setPayment('idle');setError(err.message);}};
   const copyPayPalEmail=async()=>{try{await navigator.clipboard.writeText(PAYPAL_EMAIL);setPaypalEmailCopied(true);window.setTimeout(()=>setPaypalEmailCopied(false),2200);}catch{setError(`Bitte kopiere die PayPal-Adresse manuell: ${PAYPAL_EMAIL}`);}};
   const timeLeft=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
 
@@ -201,9 +235,9 @@ function BookingApp({ onAdmin }) {
       {payment==='success'&&<div className="success-view pending-payment-view">
         <header className="pending-payment-hero">
           <span className="pending-status-icon"><Clock size={27} weight="bold"/></span>
-          <span className="success-kicker">Vorbestätigung gesendet</span>
+          <span className="success-kicker">{reservationEmailWarning?'Termin vorgemerkt':'Vorbestätigung gesendet'}</span>
           <h2>Termin vorgemerkt.<br/>Noch nicht bestätigt.</h2>
-          <p>Du hast jetzt eine Reservierungsbestätigung bekommen. Die finale Bestätigung kommt erst, wenn Zahra die 30 € Anzahlung manuell freigibt.</p>
+          <p>{reservationEmailWarning||'Du hast jetzt eine Reservierungsbestätigung bekommen. Die finale Bestätigung kommt erst, wenn Zahra die 30 € Anzahlung manuell freigibt.'}</p>
         </header>
         <section className="payment-action-card" aria-labelledby="deposit-title">
           <div className="payment-amount"><span id="deposit-title">Jetzt per PayPal anzahlen</span><strong>30,00 €</strong></div>
@@ -282,7 +316,7 @@ function Admin({ onExit, onLoggedOut }) {
   const removeBlock=async(id)=>{await api(`/api/admin/blocks/${id}`,{method:'DELETE'});flash('Tag ist wieder buchbar.');await refresh();};
   const cancelAppointment=async(id)=>{if(!window.confirm('Termin wirklich stornieren?'))return;await api(`/api/admin/bookings/${id}`,{method:'DELETE'});setSelectedBooking(null);setSheet(null);flash('Termin wurde storniert.');await refresh();};
   const saveMove=async(event)=>{event.preventDefault();try{await api(`/api/admin/bookings/${selectedBooking.id}`,{method:'PATCH',body:JSON.stringify(move)});setSheet(null);setSelectedDate(move.date);flash('Termin wurde verschoben.');await refresh();}catch(err){setError(err.message);}};
-  const confirmDeposit=async()=>{try{await api(`/api/admin/bookings/${selectedBooking.id}/payment`,{method:'POST',body:'{}'});setSelectedBooking((current)=>current?{...current,paymentStatus:'paid',confirmationStatus:'confirmed'}:current);flash('Anzahlung bestätigt. Finale Bestätigung ist vorbereitet.');await refresh();}catch(err){setError(err.message);}};
+  const confirmDeposit=async()=>{try{const result=await api(`/api/admin/bookings/${selectedBooking.id}/payment`,{method:'POST',body:'{}'});setSelectedBooking((current)=>current?{...current,paymentStatus:'paid',confirmationStatus:'confirmed'}:current);flash(result?.emailSent===false?'Anzahlung bestätigt, aber die Bestätigungsmail konnte nicht gesendet werden.':'Anzahlung bestätigt. Finale Bestätigung ist vorbereitet.');await refresh();}catch(err){setError(err.message);}};
   const openNotifications=async()=>{setSheet('notifications');if(unread){await api('/api/admin/notifications/read',{method:'POST',body:'{}'});setNotifications((items)=>items.map((item)=>({...item,readAt:item.readAt||new Date().toISOString()})));}};
   const logout=async()=>{await api('/api/admin/logout',{method:'POST',body:'{}'});onLoggedOut();};
 
