@@ -42,8 +42,10 @@ export function createDatabase(filename) {
       service_id TEXT NOT NULL REFERENCES services(id), starts_at TEXT NOT NULL, ends_at TEXT NOT NULL,
       first_name TEXT NOT NULL, last_name TEXT NOT NULL, email TEXT NOT NULL, phone TEXT NOT NULL, note TEXT,
       status TEXT NOT NULL DEFAULT 'confirmed', deposit_cents INTEGER NOT NULL DEFAULT 3000,
-      payment_status TEXT NOT NULL, payment_reference TEXT, terms_version TEXT NOT NULL,
-      terms_accepted_at TEXT NOT NULL, created_at TEXT NOT NULL
+      payment_status TEXT NOT NULL, confirmation_status TEXT NOT NULL DEFAULT 'awaiting_payment',
+      payment_reference TEXT, terms_version TEXT NOT NULL,
+      terms_accepted_at TEXT NOT NULL, confirmed_at TEXT, reminder_queued_at TEXT,
+      reminder_channel TEXT NOT NULL DEFAULT 'email', created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS bookings_time_idx ON bookings(starts_at, ends_at, status);
     CREATE TABLE IF NOT EXISTS notifications (
@@ -56,6 +58,19 @@ export function createDatabase(filename) {
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS notifications_unread_idx ON notifications(read_at, created_at);
+    CREATE TABLE IF NOT EXISTS customer_messages (
+      id TEXT PRIMARY KEY,
+      booking_id TEXT REFERENCES bookings(id),
+      kind TEXT NOT NULL,
+      channel TEXT NOT NULL CHECK (channel IN ('email','sms')),
+      recipient TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      send_after TEXT NOT NULL,
+      sent_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS customer_messages_pending_idx ON customer_messages(sent_at, send_after);
     CREATE TABLE IF NOT EXISTS admin_sessions (
       token_hash TEXT PRIMARY KEY,
       expires_at TEXT NOT NULL,
@@ -64,6 +79,15 @@ export function createDatabase(filename) {
     );
     CREATE INDEX IF NOT EXISTS admin_sessions_expiry_idx ON admin_sessions(expires_at);
   `);
+  const tableColumns = (table) => new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
+  const addColumn = (table, definition) => {
+    const columnName = definition.trim().split(/\s+/)[0];
+    if (!tableColumns(table).has(columnName)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+  };
+  addColumn('bookings', "confirmation_status TEXT NOT NULL DEFAULT 'awaiting_payment'");
+  addColumn('bookings', 'confirmed_at TEXT');
+  addColumn('bookings', 'reminder_queued_at TEXT');
+  addColumn('bookings', "reminder_channel TEXT NOT NULL DEFAULT 'email'");
 
   const insertService = db.prepare(`
     INSERT INTO services (id, name, short_name, duration_minutes) VALUES (?, ?, ?, ?)
