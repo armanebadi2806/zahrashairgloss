@@ -74,6 +74,22 @@ as $$ begin
   from public.bookings b join public.services s on s.id=b.service_id where b.status='confirmed' and b.starts_at<((p_to+1)::timestamp at time zone 'Europe/Berlin') and b.ends_at>(p_from::timestamp at time zone 'Europe/Berlin') order by b.starts_at;
 end $$;
 
+create or replace function public.admin_mark_booking_paid(p_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path=public
+as $$
+declare booking record;
+begin
+  perform public.expire_pending_bookings();
+  if not public.is_admin() then raise exception 'Nicht autorisiert.'; end if;
+  select id, first_name, last_name into booking from public.bookings where id=p_id and status='confirmed' and payment_status='pending';
+  if booking is null then raise exception 'Die Anzahlung konnte nicht bestätigt werden.'; end if;
+  update public.bookings set payment_status='paid' where id=p_id and status='confirmed' and payment_status='pending';
+  insert into public.notifications(booking_id,title,message) values(p_id,'Anzahlung bestätigt',booking.first_name||' '||booking.last_name||' wurde als bezahlt markiert.');
+end $$;
+
 create or replace function public.admin_notifications()
 returns setof public.notifications language plpgsql security definer set search_path=public
 as $$ begin perform public.expire_pending_bookings(); if not public.is_admin() then raise exception 'Nicht autorisiert.'; end if; return query select * from public.notifications order by created_at desc limit 30; end $$;
@@ -111,3 +127,5 @@ begin
   update public.bookings set starts_at=c.starts_at,ends_at=c.ends_at,status='confirmed' where id=p_id;
   return p_id;
 end $$;
+
+grant execute on function public.admin_mark_booking_paid(uuid) to authenticated;

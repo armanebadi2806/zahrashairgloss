@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { createDatabase } from './database.mjs';
 import { createAuth } from './auth.mjs';
-import { TERMS_VERSION, cancelBooking, confirmDemoPayment, createBlockedPeriod, createHold, createManualBooking, deleteBlockedPeriod, listAvailableSlots, listBlockedPeriods, listBookableDates, listBookings, listBookingsRange, listNotifications, listServices, markNotificationsRead, releaseHold, rescheduleBooking } from './booking-service.mjs';
+import { TERMS_VERSION, cancelBooking, confirmDemoPayment, createBlockedPeriod, createHold, createManualBooking, deleteBlockedPeriod, listAvailableSlots, listBlockedPeriods, listBookableDates, listBookings, listBookingsRange, listNotifications, listServices, markNotificationsRead, markBookingPaid, releaseHold, rescheduleBooking } from './booking-service.mjs';
 
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 try { process.loadEnvFile(join(root,'.env')); } catch {}
@@ -30,6 +30,7 @@ async function api(req,res,url){
     if(req.method==='GET'&&url.pathname==='/api/admin/calendar'){const from=url.searchParams.get('from');const to=url.searchParams.get('to');return send(res,200,{bookings:listBookingsRange(db,from,to),blocks:listBlockedPeriods(db,from,to)});}
     if(req.method==='POST'&&url.pathname==='/api/admin/bookings')return send(res,201,{booking:createManualBooking(db,await readJson(req))});
     if(req.method==='PATCH'&&url.pathname.startsWith('/api/admin/bookings/'))return send(res,200,{booking:rescheduleBooking(db,url.pathname.split('/').pop(),await readJson(req))});
+    if(req.method==='POST'&&url.pathname.startsWith('/api/admin/bookings/')&&url.pathname.endsWith('/payment')){markBookingPaid(db,url.pathname.split('/')[4]);return send(res,200,{paid:true});}
     if(req.method==='DELETE'&&url.pathname.startsWith('/api/admin/bookings/')){cancelBooking(db,url.pathname.split('/').pop());return send(res,200,{cancelled:true});}
     if(req.method==='POST'&&url.pathname==='/api/admin/blocks')return send(res,201,{block:createBlockedPeriod(db,await readJson(req))});
     if(req.method==='DELETE'&&url.pathname.startsWith('/api/admin/blocks/')){deleteBlockedPeriod(db,url.pathname.split('/').pop());return send(res,200,{deleted:true});}

@@ -176,6 +176,17 @@ export function cancelBooking(db,id) {
   if(!result.changes)throw new Error('Termin wurde nicht gefunden.');
 }
 
+export function markBookingPaid(db,id,now=new Date()) {
+  cleanupExpiredPendingBookings(db,now);
+  const booking=db.prepare(`SELECT id, first_name AS firstName, last_name AS lastName FROM bookings WHERE id=? AND status='confirmed' AND payment_status='pending'`).get(id);
+  if(!booking)throw new Error('Die Anzahlung konnte nicht bestätigt werden.');
+  const result=db.prepare(`UPDATE bookings SET payment_status='paid' WHERE id=? AND status='confirmed' AND payment_status='pending'`).run(id);
+  if(!result.changes)throw new Error('Die Anzahlung konnte nicht bestätigt werden.');
+  db.prepare(`INSERT INTO notifications(id,booking_id,type,title,message,created_at) VALUES(?,?,?,?,?,?)`).run(
+    randomUUID(),id,'payment_confirmed','Anzahlung bestätigt',
+    `${booking.firstName} ${booking.lastName} wurde als bezahlt markiert.`,new Date().toISOString());
+}
+
 export function rescheduleBooking(db,id,{date,time},now=new Date()) {
   cleanupExpiredPendingBookings(db,now);
   db.exec('BEGIN IMMEDIATE');
