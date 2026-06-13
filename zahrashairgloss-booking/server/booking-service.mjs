@@ -9,6 +9,7 @@ const pad = (value) => String(value).padStart(2, '0');
 const minutesOf = (time) => { const [h, m] = time.split(':').map(Number); return h * 60 + m; };
 const timeOf = (total) => `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
 const localIso = (date, time) => `${date}T${time}:00${BERLIN_OFFSET}`;
+const isValidTime = (time) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(time || '');
 
 const REGULAR_SERVICE_IDS = new Set(['cut', 'gloss', 'gloss-cut', 'colour']);
 
@@ -75,6 +76,31 @@ function processReminderQueue(db, now = new Date()) {
 
 function touchSchedulers(db, now = new Date()) {
   processReminderQueue(db, now);
+}
+
+function serviceDurationMinutes(db, serviceId) {
+  const service = db.prepare('SELECT duration_minutes AS duration FROM services WHERE id=? AND active=1').get(serviceId);
+  if (!service) throw new Error('Unbekannter Service.');
+  return service.duration;
+}
+
+function ensureNoAdminConflict(db, { serviceId, date, time, ignoreBookingId = null }) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) throw new Error('Bitte ein gültiges Datum wählen.');
+  if (!isValidTime(time)) throw new Error('Bitte eine gültige Uhrzeit im Format HH:MM wählen.');
+  const duration = serviceDurationMinutes(db, serviceId);
+  const startsAt = localIso(date, time);
+  const endsAt = localIso(date, timeOf(minutesOf(time) + duration));
+  const conflict = db.prepare(`
+    SELECT id
+    FROM bookings
+    WHERE status='confirmed'
+      AND (? IS NULL OR id<>?)
+      AND starts_at < ?
+      AND ends_at > ?
+    LIMIT 1
+  `).get(ignoreBookingId, ignoreBookingId, endsAt, startsAt);
+  if (conflict) throw new Error('Zu dieser Uhrzeit besteht bereits ein anderer Termin.');
+  return { startsAt, endsAt };
 }
 
 function configuredSlots(serviceId, weekday) {
@@ -237,15 +263,13 @@ export function createManualBooking(db,{serviceId,date,time,customer},now=new Da
   cleanupExpiredPendingBookings(db,now);
   db.exec('BEGIN IMMEDIATE');
   try{
-    if(!listAvailableSlots(db,serviceId,date,now).includes(time))throw new Error('Dieser Termin ist nicht mehr verfügbar.');
-    const weekday=new Date(`${date}T12:00:00Z`).getUTCDay()||7;
-    const configured=configuredSlots(serviceId,weekday).find((item)=>item.time===time);
-    const start=minutesOf(time);const holdId=randomUUID();const bookingId=randomUUID();const createdAt=now.toISOString();
+    const { startsAt, endsAt } = ensureNoAdminConflict(db, { serviceId, date, time });
+    const holdId=randomUUID();const bookingId=randomUUID();const createdAt=now.toISOString();
     db.prepare(`INSERT INTO holds(id,service_id,starts_at,ends_at,expires_at,created_at,status) VALUES(?,?,?,?,?,?,'converted')`)
-      .run(holdId,serviceId,localIso(date,time),localIso(date,timeOf(start+configured.duration)),createdAt,createdAt);
+      .run(holdId,serviceId,startsAt,endsAt,createdAt,createdAt);
     db.prepare(`INSERT INTO bookings(id,hold_id,service_id,starts_at,ends_at,first_name,last_name,email,phone,note,status,deposit_cents,payment_status,confirmation_status,payment_reference,terms_version,terms_accepted_at,confirmed_at,created_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,'confirmed',0,'manual','confirmed','MANUAL',?,?,?,?)`).run(
-      bookingId,holdId,serviceId,localIso(date,time),localIso(date,timeOf(start+configured.duration)),
+      bookingId,holdId,serviceId,startsAt,endsAt,
       customer.firstName.trim(),customer.lastName.trim(),customer.email?.trim()||'',customer.phone?.trim()||'',customer.note?.trim()||null,
       'manual-admin',createdAt,createdAt,createdAt);
     db.exec('COMMIT');return {id:bookingId};
@@ -285,13 +309,9 @@ export function rescheduleBooking(db,id,{date,time},now=new Date()) {
   try{
     const booking=db.prepare(`SELECT id,service_id AS serviceId FROM bookings WHERE id=? AND status='confirmed'`).get(id);
     if(!booking)throw new Error('Termin wurde nicht gefunden.');
-    db.prepare(`UPDATE bookings SET status='moving' WHERE id=?`).run(id);
-    if(!listAvailableSlots(db,booking.serviceId,date,now).includes(time))throw new Error('Der neue Termin ist nicht mehr verfügbar.');
-    const weekday=new Date(`${date}T12:00:00Z`).getUTCDay()||7;
-    const configured=configuredSlots(booking.serviceId,weekday).find((item)=>item.time===time);
-    const start=minutesOf(time);
+    const { startsAt, endsAt } = ensureNoAdminConflict(db, { serviceId: booking.serviceId, date, time, ignoreBookingId: id });
     db.prepare(`UPDATE bookings SET starts_at=?,ends_at=?,status='confirmed' WHERE id=?`)
-      .run(localIso(date,time),localIso(date,timeOf(start+configured.duration)),id);
+      .run(startsAt, endsAt, id);
     db.exec('COMMIT');return {id,startsAt:localIso(date,time)};
   }catch(error){db.exec('ROLLBACK');throw error;}
 }

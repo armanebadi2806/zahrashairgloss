@@ -20,6 +20,12 @@ const markBookingConfirmedLocally = (id) => {
   overrides[id] = { paymentStatus: 'paid', confirmationStatus: 'confirmed' };
   writeBookingOverrides(overrides);
 };
+const clearBookingOverride = (id) => {
+  const overrides = readBookingOverrides();
+  if (!overrides[id]) return;
+  delete overrides[id];
+  writeBookingOverrides(overrides);
+};
 const isMissingFunctionError = (error) => /Could not find the function public\.admin_mark_booking_paid|schema cache/i.test(error?.message || '');
 const isBlockedUpdateError = (error) => /permission denied for table bookings/i.test(error?.message || '');
 const supabaseRequest = async (pathname, { method='GET', body, token=sessionToken() }={}) => {
@@ -60,15 +66,38 @@ const berlinIso = (value) => {
   const parts=Object.fromEntries(new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Berlin',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date(value)).filter((part)=>part.type!=='literal').map((part)=>[part.type,part.value]));
   return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
 };
+const readField = (item, snakeKey, camelKey = snakeKey.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())) => item?.[snakeKey] ?? item?.[camelKey];
 const normalizeBooking = (item) => {
   const override = readBookingOverrides()[item.id];
-  const paymentStatus = override?.paymentStatus || item.payment_status;
-  const confirmationStatus = override?.confirmationStatus || item.confirmation_status || (paymentStatus==='paid'||paymentStatus==='manual'?'confirmed':'awaiting_payment');
-  return {...item,serviceId:item.service_id,serviceName:item.service_name,serviceShort:item.service_short,startsAt:berlinIso(item.starts_at),endsAt:berlinIso(item.ends_at),firstName:item.first_name,lastName:item.last_name,paymentStatus,confirmationStatus,confirmedAt:item.confirmed_at,reminderQueuedAt:item.reminder_queued_at,reminderChannel:item.reminder_channel,depositCents:item.deposit_cents};
+  const paymentValue = readField(item, 'payment_status', 'paymentStatus');
+  const confirmationValue = readField(item, 'confirmation_status', 'confirmationStatus');
+  const paymentStatus = paymentValue === 'paid' || paymentValue === 'manual'
+    ? paymentValue
+    : (override?.paymentStatus || paymentValue);
+  const confirmationStatus = confirmationValue === 'confirmed'
+    ? confirmationValue
+    : (override?.confirmationStatus || confirmationValue || (paymentStatus==='paid'||paymentStatus==='manual'?'confirmed':'awaiting_payment'));
+  if ((paymentStatus === 'paid' || paymentStatus === 'manual') && confirmationStatus === 'confirmed') clearBookingOverride(item.id);
+  return {
+    ...item,
+    serviceId: readField(item, 'service_id', 'serviceId'),
+    serviceName: readField(item, 'service_name', 'serviceName'),
+    serviceShort: readField(item, 'service_short', 'serviceShort'),
+    startsAt: berlinIso(readField(item, 'starts_at', 'startsAt')),
+    endsAt: berlinIso(readField(item, 'ends_at', 'endsAt')),
+    firstName: readField(item, 'first_name', 'firstName'),
+    lastName: readField(item, 'last_name', 'lastName'),
+    paymentStatus,
+    confirmationStatus,
+    confirmedAt: readField(item, 'confirmed_at', 'confirmedAt'),
+    reminderQueuedAt: readField(item, 'reminder_queued_at', 'reminderQueuedAt'),
+    reminderChannel: readField(item, 'reminder_channel', 'reminderChannel'),
+    depositCents: readField(item, 'deposit_cents', 'depositCents'),
+  };
 };
-const hasOpenDeposit = (booking) => booking.paymentStatus !== 'paid' && booking.paymentStatus !== 'manual';
-const normalizeBlock = (item) => ({...item,startsAt:berlinIso(item.starts_at),endsAt:berlinIso(item.ends_at)});
-const normalizeNotification = (item) => ({...item,bookingId:item.booking_id,readAt:item.read_at,createdAt:item.created_at});
+const hasOpenDeposit = (booking) => booking.confirmationStatus !== 'confirmed' && booking.paymentStatus !== 'paid' && booking.paymentStatus !== 'manual';
+const normalizeBlock = (item) => ({...item,startsAt:berlinIso(readField(item, 'starts_at', 'startsAt')),endsAt:berlinIso(readField(item, 'ends_at', 'endsAt'))});
+const normalizeNotification = (item) => ({...item,bookingId:readField(item, 'booking_id', 'bookingId'),readAt:readField(item, 'read_at', 'readAt'),createdAt:readField(item, 'created_at', 'createdAt')});
 const openPayPalSendMoney = () => window.open('https://www.paypal.com/us/digital-wallet/send-receive-money/send-money','_blank','noopener,noreferrer');
 
 const supabaseApi = async (path, options={}) => {
@@ -302,8 +331,8 @@ function Admin({ onExit, onLoggedOut }) {
   const refresh=async()=>{setError('');try{const [calendarData,notificationData,serviceData]=await Promise.all([api(`/api/admin/calendar?from=${isoDate(weekStart)}&to=${weekEnd}`),api('/api/admin/notifications'),api('/api/services')]);setBookings(calendarData.bookings);setBlocks(calendarData.blocks);setNotifications(notificationData.notifications);setServices(serviceData.services);setManual((value)=>({...value,serviceId:value.serviceId||serviceData.services[0]?.id||''}));}catch(err){setError(err.message);}};
   useEffect(()=>{refresh();},[weekStart]);
   useEffect(()=>{const timer=window.setInterval(()=>{api('/api/admin/notifications').then((data)=>setNotifications(data.notifications)).catch(()=>{});},20000);return()=>window.clearInterval(timer);},[]);
-  useEffect(()=>{if(!manual.serviceId||!manual.date)return;api(`/api/availability?serviceId=${manual.serviceId}&date=${manual.date}`).then((data)=>{setManualSlots(data.slots);setManual((value)=>({...value,time:data.slots.includes(value.time)?value.time:(data.slots[0]||'')}));}).catch((err)=>setError(err.message));},[manual.serviceId,manual.date,sheet]);
-  useEffect(()=>{if(sheet!=='move'||!selectedBooking||!move.date)return;api(`/api/availability?serviceId=${selectedBooking.serviceId}&date=${move.date}`).then((data)=>{setMoveSlots(data.slots);setMove((value)=>({...value,time:data.slots.includes(value.time)?value.time:(data.slots[0]||'')}));}).catch((err)=>setError(err.message));},[sheet,selectedBooking,move.date]);
+  useEffect(()=>{if(!manual.serviceId||!manual.date)return;api(`/api/availability?serviceId=${manual.serviceId}&date=${manual.date}`).then((data)=>setManualSlots(data.slots)).catch((err)=>setError(err.message));},[manual.serviceId,manual.date,sheet]);
+  useEffect(()=>{if(sheet!=='move'||!selectedBooking||!move.date)return;api(`/api/availability?serviceId=${selectedBooking.serviceId}&date=${move.date}`).then((data)=>setMoveSlots(data.slots)).catch((err)=>setError(err.message));},[sheet,selectedBooking,move.date]);
 
   const dayBookings=bookings.filter((item)=>item.startsAt.slice(0,10)===selectedDate);
   const dayBlock=blocks.find((item)=>item.startsAt.slice(0,10)===selectedDate);
@@ -316,7 +345,7 @@ function Admin({ onExit, onLoggedOut }) {
   const removeBlock=async(id)=>{await api(`/api/admin/blocks/${id}`,{method:'DELETE'});flash('Tag ist wieder buchbar.');await refresh();};
   const cancelAppointment=async(id)=>{if(!window.confirm('Termin wirklich stornieren?'))return;await api(`/api/admin/bookings/${id}`,{method:'DELETE'});setSelectedBooking(null);setSheet(null);flash('Termin wurde storniert.');await refresh();};
   const saveMove=async(event)=>{event.preventDefault();try{await api(`/api/admin/bookings/${selectedBooking.id}`,{method:'PATCH',body:JSON.stringify(move)});setSheet(null);setSelectedDate(move.date);flash('Termin wurde verschoben.');await refresh();}catch(err){setError(err.message);}};
-  const confirmDeposit=async()=>{try{const result=await api(`/api/admin/bookings/${selectedBooking.id}/payment`,{method:'POST',body:'{}'});setSelectedBooking((current)=>current?{...current,paymentStatus:'paid',confirmationStatus:'confirmed'}:current);flash(result?.emailSent===false?'Anzahlung bestätigt, aber die Bestätigungsmail konnte nicht gesendet werden.':'Anzahlung bestätigt. Finale Bestätigung ist vorbereitet.');await refresh();}catch(err){setError(err.message);}};
+  const confirmDeposit=async()=>{try{const result=await api(`/api/admin/bookings/${selectedBooking.id}/payment`,{method:'POST',body:'{}'});markBookingConfirmedLocally(selectedBooking.id);setSelectedBooking((current)=>current?{...current,paymentStatus:'paid',confirmationStatus:'confirmed'}:current);flash(result?.emailSent===false?'Anzahlung bestätigt, aber die Bestätigungsmail konnte nicht gesendet werden.':'Anzahlung bestätigt. Finale Bestätigung ist vorbereitet.');await refresh();}catch(err){setError(err.message);}};
   const openNotifications=async()=>{setSheet('notifications');if(unread){await api('/api/admin/notifications/read',{method:'POST',body:'{}'});setNotifications((items)=>items.map((item)=>({...item,readAt:item.readAt||new Date().toISOString()})));}};
   const logout=async()=>{await api('/api/admin/logout',{method:'POST',body:'{}'});onLoggedOut();};
 
@@ -336,10 +365,10 @@ function Admin({ onExit, onLoggedOut }) {
 
     <nav className="admin-bottom-actions"><button onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}><Plus size={21}/><span>Termin</span></button><button onClick={()=>{setFreeDay({date:selectedDate,reason:'Frei'});setSheet('free-day');}}><CalendarBlank size={21}/><span>Freier Tag</span></button></nav>
 
-    {sheet==='booking'&&<AdminSheet title="Termin eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveManual}><label>Service<select value={manual.serviceId} onChange={(e)=>setManual({...manual,serviceId:e.target.value})}>{services.map((item)=><option key={item.id} value={item.id}>{item.short}</option>)}</select></label><div className="form-pair"><label>Datum<input type="date" value={manual.date} onChange={(e)=>setManual({...manual,date:e.target.value})}/></label><label>Uhrzeit<select value={manual.time} onChange={(e)=>setManual({...manual,time:e.target.value})}>{manualSlots.map((time)=><option key={time}>{time}</option>)}</select></label></div>{!manualSlots.length&&<p className="form-warning">An diesem Tag ist für den Service kein Termin frei.</p>}<div className="form-pair"><label>Vorname<input required value={manual.firstName} onChange={(e)=>setManual({...manual,firstName:e.target.value})}/></label><label>Nachname<input required value={manual.lastName} onChange={(e)=>setManual({...manual,lastName:e.target.value})}/></label></div><label>Telefon <span>optional</span><input value={manual.phone} onChange={(e)=>setManual({...manual,phone:e.target.value})}/></label><label>Notiz <span>optional</span><textarea value={manual.note} onChange={(e)=>setManual({...manual,note:e.target.value})}/></label><button className="sheet-primary" disabled={!manual.time}>Termin speichern</button></form></AdminSheet>}
+    {sheet==='booking'&&<AdminSheet title="Termin eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveManual}><label>Service<select value={manual.serviceId} onChange={(e)=>setManual({...manual,serviceId:e.target.value})}>{services.map((item)=><option key={item.id} value={item.id}>{item.short}</option>)}</select></label><div className="form-pair"><label>Datum<input type="date" value={manual.date} onChange={(e)=>setManual({...manual,date:e.target.value})}/></label><label>Uhrzeit<input type="time" list="manual-slot-suggestions" value={manual.time} onChange={(e)=>setManual({...manual,time:e.target.value})}/><datalist id="manual-slot-suggestions">{manualSlots.map((time)=><option key={time} value={time}/>)}</datalist></label></div><p className="sheet-note">Im Admin kannst du jede Uhrzeit vergeben. Die Vorschläge sind nur eine Hilfe.</p><div className="form-pair"><label>Vorname<input required value={manual.firstName} onChange={(e)=>setManual({...manual,firstName:e.target.value})}/></label><label>Nachname<input required value={manual.lastName} onChange={(e)=>setManual({...manual,lastName:e.target.value})}/></label></div><label>Telefon <span>optional</span><input value={manual.phone} onChange={(e)=>setManual({...manual,phone:e.target.value})}/></label><label>Notiz <span>optional</span><textarea value={manual.note} onChange={(e)=>setManual({...manual,note:e.target.value})}/></label><button className="sheet-primary" disabled={!manual.time}>Termin speichern</button></form></AdminSheet>}
     {sheet==='free-day'&&<AdminSheet title="Freien Tag eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveFreeDay}><label>Datum<input type="date" value={freeDay.date} onChange={(e)=>setFreeDay({...freeDay,date:e.target.value})}/></label><label>Grund<select value={freeDay.reason} onChange={(e)=>setFreeDay({...freeDay,reason:e.target.value})}><option>Frei</option><option>Urlaub</option><option>Krank</option><option>Fortbildung</option><option>Privater Termin</option></select></label><p className="sheet-note">Der Tag verschwindet sofort aus der Online-Buchung. Bestehende Termine müssen vorher verschoben oder storniert werden.</p><button className="sheet-primary">Tag blockieren</button></form></AdminSheet>}
     {sheet==='details'&&selectedBooking&&<AdminSheet title="Termindetails" onClose={()=>setSheet(null)}><div className="appointment-detail"><div className="detail-person"><span>{selectedBooking.firstName[0]}{selectedBooking.lastName[0]}</span><div><h3>{selectedBooking.firstName} {selectedBooking.lastName}</h3><p>{selectedBooking.phone||'Keine Telefonnummer'}</p></div></div><dl><div><dt>Uhrzeit Buchung</dt><dd>{selectedBooking.startsAt.slice(11,16)} Uhr</dd></div><div><dt>Service</dt><dd>{selectedBooking.serviceName}</dd></div><div><dt>Status</dt><dd><span className={`status-pill ${selectedBooking.confirmationStatus==='confirmed'?'confirmed':selectedBooking.paymentStatus==='paid'?'checked':'pending'}`}>{selectedBooking.confirmationStatus==='confirmed'?'Final bestätigt':selectedBooking.paymentStatus==='paid'?'Anzahlung geprüft, noch offen':'Reservierung vorgemerkt · 30 € offen'}</span></dd></div>{selectedBooking.reminderQueuedAt&&<div><dt>Erinnerung</dt><dd>{selectedBooking.reminderChannel==='sms'?'SMS':'E-Mail'} ist für 24h vorher eingeplant.</dd></div>}{selectedBooking.note&&<div><dt>Notiz</dt><dd>{selectedBooking.note}</dd></div>}</dl><div className="sheet-actions">{hasOpenDeposit(selectedBooking)&&<button className="sheet-secondary sheet-primary-action" onClick={confirmDeposit}><Check size={17}/> Anzahlung bestätigt</button>}<button className="sheet-secondary" onClick={()=>{setMove({date:selectedBooking.startsAt.slice(0,10),time:''});setSheet('move');}}><CalendarBlank size={17}/> Termin verschieben</button><button className="sheet-danger" onClick={()=>cancelAppointment(selectedBooking.id)}><Trash size={17}/> Termin stornieren</button></div></div></AdminSheet>}
-    {sheet==='move'&&selectedBooking&&<AdminSheet title="Termin verschieben" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveMove}><p className="sheet-note">{selectedBooking.firstName} {selectedBooking.lastName} · {selectedBooking.serviceShort}</p><label>Neues Datum<input type="date" value={move.date} onChange={(e)=>setMove({...move,date:e.target.value})}/></label><label>Freie Uhrzeit<select value={move.time} onChange={(e)=>setMove({...move,time:e.target.value})}>{moveSlots.map((time)=><option key={time}>{time}</option>)}</select></label>{!moveSlots.length&&<p className="form-warning">An diesem Tag ist kein passender Termin frei.</p>}<button className="sheet-primary" disabled={!move.time}>Verschieben</button></form></AdminSheet>}
+    {sheet==='move'&&selectedBooking&&<AdminSheet title="Termin verschieben" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveMove}><p className="sheet-note">{selectedBooking.firstName} {selectedBooking.lastName} · {selectedBooking.serviceShort}</p><label>Neues Datum<input type="date" value={move.date} onChange={(e)=>setMove({...move,date:e.target.value})}/></label><label>Neue Uhrzeit<input type="time" list="move-slot-suggestions" value={move.time} onChange={(e)=>setMove({...move,time:e.target.value})}/><datalist id="move-slot-suggestions">{moveSlots.map((time)=><option key={time} value={time}/>)}</datalist></label><p className="sheet-note">Auch beim Verschieben darf der Admin jede Uhrzeit setzen. Die Vorschläge sind optional.</p><button className="sheet-primary" disabled={!move.time}>Verschieben</button></form></AdminSheet>}
     {sheet==='notifications'&&<AdminSheet title="Benachrichtigungen" onClose={()=>setSheet(null)}><div className="notification-list">{notifications.length?notifications.map((item)=><article key={item.id} className={!item.readAt?'unread':''}><span><Bell size={17}/></span><div><strong>{item.title}</strong><p>{item.message}</p><small>{new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(item.createdAt))}</small></div></article>):<div className="empty-notifications">Keine neuen Benachrichtigungen.</div>}</div></AdminSheet>}
   </main>;
 }
