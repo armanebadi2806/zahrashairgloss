@@ -28,6 +28,7 @@ const clearBookingOverride = (id) => {
 };
 const isMissingFunctionError = (error) => /Could not find the function public\.admin_mark_booking_paid|schema cache/i.test(error?.message || '');
 const isBlockedUpdateError = (error) => /permission denied for table bookings/i.test(error?.message || '');
+const isMissingBlockRangeFunctionError = (error) => /public\.admin_create_blocks|schema cache/i.test(error?.message || '');
 const supabaseRequest = async (pathname, { method='GET', body, token=sessionToken() }={}) => {
   const response = await fetch(`${SUPABASE_URL}${pathname}`, {
     method,
@@ -133,7 +134,19 @@ const supabaseApi = async (path, options={}) => {
   if(path.startsWith('/api/admin/calendar')){const p=new URLSearchParams(path.split('?')[1]);const [bookings,blocks]=await Promise.all([rpc('admin_calendar',{p_from:p.get('from'),p_to:p.get('to')}),rpc('admin_blocks',{p_from:p.get('from'),p_to:p.get('to')})]);return {bookings:bookings.map(normalizeBooking),blocks:blocks.map(normalizeBlock)};}
   if(path==='/api/admin/notifications')return {notifications:(await rpc('admin_notifications')).map(normalizeNotification)};
   if(path==='/api/admin/notifications/read'&&method==='POST'){await rpc('admin_mark_notifications_read');return {read:true};}
-  if(path==='/api/admin/blocks'&&method==='POST')return {block:{id:await rpc('admin_create_block',{p_date:payload.date,p_reason:payload.reason})}};
+  if(path==='/api/admin/blocks'&&method==='POST'){
+    const fromDate = payload.fromDate || payload.date;
+    const toDate = payload.toDate || payload.date || payload.fromDate;
+    try{
+      const count = await rpc('admin_create_blocks',{p_from_date:fromDate,p_to_date:toDate,p_reason:payload.reason});
+      return {block:{count}};
+    }catch(error){
+      if (!isMissingBlockRangeFunctionError(error)) throw error;
+      const dates = eachDateInRange(fromDate,toDate);
+      await Promise.all(dates.map((value)=>rpc('admin_create_block',{p_date:value,p_reason:payload.reason})));
+      return {block:{count:dates.length}};
+    }
+  }
   if(path.startsWith('/api/admin/blocks/')&&method==='DELETE'){await rpc('admin_delete_block',{p_id:Number(path.split('/').pop())});return {deleted:true};}
   if(path.startsWith('/api/admin/bookings/')&&path.endsWith('/payment')&&method==='POST'){
     const id=path.split('/')[4];
@@ -287,6 +300,8 @@ function BookingApp({ onAdmin }) {
 
 const isoDate=(date)=>`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
 const addDays=(date,days)=>{const next=new Date(date);next.setDate(next.getDate()+days);return next;};
+const addIsoDays=(value,days)=>isoDate(addDays(new Date(`${value}T12:00:00`),days));
+const eachDateInRange=(fromDate,toDate)=>{const dates=[];for(let current=fromDate;current<=toDate;current=addIsoDays(current,1))dates.push(current);return dates;};
 const startMonday=(date)=>{const day=date.getDay()||7;return addDays(date,1-day);};
 
 function AdminSheet({ title, onClose, children }) {
@@ -322,7 +337,7 @@ function Admin({ onExit, onLoggedOut }) {
   const [notice,setNotice]=useState('');
   const [manual,setManual]=useState({serviceId:'',date:isoDate(new Date()),time:'',firstName:'',lastName:'',email:'',phone:'',note:''});
   const [manualSlots,setManualSlots]=useState([]);
-  const [freeDay,setFreeDay]=useState({date:isoDate(new Date()),reason:'Frei'});
+  const [freeDay,setFreeDay]=useState({fromDate:isoDate(new Date()),toDate:isoDate(new Date()),reason:'Frei'});
   const [move,setMove]=useState({date:isoDate(new Date()),time:''});
   const [moveSlots,setMoveSlots]=useState([]);
   const weekDays=Array.from({length:7},(_,index)=>addDays(weekStart,index));
@@ -341,7 +356,7 @@ function Admin({ onExit, onLoggedOut }) {
   const changeWeek=(days)=>{const next=addDays(weekStart,days);setWeekStart(next);setSelectedDate(isoDate(next));};
   const flash=(message)=>{setNotice(message);window.setTimeout(()=>setNotice(''),2600);};
   const saveManual=async(event)=>{event.preventDefault();try{await api('/api/admin/bookings',{method:'POST',body:JSON.stringify({serviceId:manual.serviceId,date:manual.date,time:manual.time,customer:{firstName:manual.firstName,lastName:manual.lastName,email:manual.email,phone:manual.phone,note:manual.note}})});setSheet(null);setSelectedDate(manual.date);flash('Termin wurde eingetragen.');await refresh();}catch(err){setError(err.message);}};
-  const saveFreeDay=async(event)=>{event.preventDefault();try{await api('/api/admin/blocks',{method:'POST',body:JSON.stringify(freeDay)});setSheet(null);setSelectedDate(freeDay.date);flash('Freier Tag wurde gespeichert.');await refresh();}catch(err){setError(err.message);}};
+  const saveFreeDay=async(event)=>{event.preventDefault();try{const result=await api('/api/admin/blocks',{method:'POST',body:JSON.stringify(freeDay)});setSheet(null);setSelectedDate(freeDay.fromDate);const count=result?.block?.count||result?.count||1;flash(count>1?`${count} freie Tage wurden gespeichert.`:'Freier Tag wurde gespeichert.');await refresh();}catch(err){setError(err.message);}};
   const removeBlock=async(id)=>{await api(`/api/admin/blocks/${id}`,{method:'DELETE'});flash('Tag ist wieder buchbar.');await refresh();};
   const cancelAppointment=async(id)=>{if(!window.confirm('Termin wirklich stornieren?'))return;await api(`/api/admin/bookings/${id}`,{method:'DELETE'});setSelectedBooking(null);setSheet(null);flash('Termin wurde storniert.');await refresh();};
   const saveMove=async(event)=>{event.preventDefault();try{await api(`/api/admin/bookings/${selectedBooking.id}`,{method:'PATCH',body:JSON.stringify(move)});setSheet(null);setSelectedDate(move.date);flash('Termin wurde verschoben.');await refresh();}catch(err){setError(err.message);}};
@@ -363,10 +378,10 @@ function Admin({ onExit, onLoggedOut }) {
       <section className="quick-overview"><h3>Diese Woche</h3><div><span><strong>{bookings.length}</strong> Termine</span><span><strong>{bookings.filter((item)=>item.paymentStatus==='paid').length*30} €</strong> erhalten</span><span><strong>{blocks.length}</strong> freie Tage</span></div></section>
     </section>
 
-    <nav className="admin-bottom-actions"><button onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}><Plus size={21}/><span>Termin</span></button><button onClick={()=>{setFreeDay({date:selectedDate,reason:'Frei'});setSheet('free-day');}}><CalendarBlank size={21}/><span>Freier Tag</span></button></nav>
+    <nav className="admin-bottom-actions"><button onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}><Plus size={21}/><span>Termin</span></button><button onClick={()=>{setFreeDay({fromDate:selectedDate,toDate:selectedDate,reason:'Frei'});setSheet('free-day');}}><CalendarBlank size={21}/><span>Freier Tag</span></button></nav>
 
     {sheet==='booking'&&<AdminSheet title="Termin eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveManual}><label>Service<select value={manual.serviceId} onChange={(e)=>setManual({...manual,serviceId:e.target.value})}>{services.map((item)=><option key={item.id} value={item.id}>{item.short}</option>)}</select></label><div className="form-pair"><label>Datum<input type="date" value={manual.date} onChange={(e)=>setManual({...manual,date:e.target.value})}/></label><label>Uhrzeit<input type="time" list="manual-slot-suggestions" value={manual.time} onChange={(e)=>setManual({...manual,time:e.target.value})}/><datalist id="manual-slot-suggestions">{manualSlots.map((time)=><option key={time} value={time}/>)}</datalist></label></div><p className="sheet-note">Im Admin kannst du jede Uhrzeit vergeben. Die Vorschläge sind nur eine Hilfe.</p><div className="form-pair"><label>Vorname<input required value={manual.firstName} onChange={(e)=>setManual({...manual,firstName:e.target.value})}/></label><label>Nachname<input required value={manual.lastName} onChange={(e)=>setManual({...manual,lastName:e.target.value})}/></label></div><label>Telefon <span>optional</span><input value={manual.phone} onChange={(e)=>setManual({...manual,phone:e.target.value})}/></label><label>Notiz <span>optional</span><textarea value={manual.note} onChange={(e)=>setManual({...manual,note:e.target.value})}/></label><button className="sheet-primary" disabled={!manual.time}>Termin speichern</button></form></AdminSheet>}
-    {sheet==='free-day'&&<AdminSheet title="Freien Tag eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveFreeDay}><label>Datum<input type="date" value={freeDay.date} onChange={(e)=>setFreeDay({...freeDay,date:e.target.value})}/></label><label>Grund<select value={freeDay.reason} onChange={(e)=>setFreeDay({...freeDay,reason:e.target.value})}><option>Frei</option><option>Urlaub</option><option>Krank</option><option>Fortbildung</option><option>Privater Termin</option></select></label><p className="sheet-note">Der Tag verschwindet sofort aus der Online-Buchung. Bestehende Termine müssen vorher verschoben oder storniert werden.</p><button className="sheet-primary">Tag blockieren</button></form></AdminSheet>}
+    {sheet==='free-day'&&<AdminSheet title="Freie Tage eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveFreeDay}><div className="form-pair"><label>Von<input type="date" value={freeDay.fromDate} onChange={(e)=>setFreeDay((current)=>{const fromDate=e.target.value;return {...current,fromDate,toDate:current.toDate<fromDate?fromDate:current.toDate};})}/></label><label>Bis<input type="date" min={freeDay.fromDate} value={freeDay.toDate} onChange={(e)=>setFreeDay({...freeDay,toDate:e.target.value})}/></label></div><label>Grund<select value={freeDay.reason} onChange={(e)=>setFreeDay({...freeDay,reason:e.target.value})}><option>Frei</option><option>Urlaub</option><option>Krank</option><option>Fortbildung</option><option>Privater Termin</option></select></label><p className="sheet-note">Der Zeitraum verschwindet sofort aus der Online-Buchung. Bestehende Termine im Zeitraum müssen vorher verschoben oder storniert werden.</p><button className="sheet-primary">{eachDateInRange(freeDay.fromDate,freeDay.toDate).length>1?'Zeitraum blockieren':'Tag blockieren'}</button></form></AdminSheet>}
     {sheet==='details'&&selectedBooking&&<AdminSheet title="Termindetails" onClose={()=>setSheet(null)}><div className="appointment-detail"><div className="detail-person"><span>{selectedBooking.firstName[0]}{selectedBooking.lastName[0]}</span><div><h3>{selectedBooking.firstName} {selectedBooking.lastName}</h3><p>{selectedBooking.phone||'Keine Telefonnummer'}</p></div></div><dl><div><dt>Uhrzeit Buchung</dt><dd>{selectedBooking.startsAt.slice(11,16)} Uhr</dd></div><div><dt>Service</dt><dd>{selectedBooking.serviceName}</dd></div><div><dt>Status</dt><dd><span className={`status-pill ${selectedBooking.confirmationStatus==='confirmed'?'confirmed':selectedBooking.paymentStatus==='paid'?'checked':'pending'}`}>{selectedBooking.confirmationStatus==='confirmed'?'Final bestätigt':selectedBooking.paymentStatus==='paid'?'Anzahlung geprüft, noch offen':'Reservierung vorgemerkt · 30 € offen'}</span></dd></div>{selectedBooking.reminderQueuedAt&&<div><dt>Erinnerung</dt><dd>{selectedBooking.reminderChannel==='sms'?'SMS':'E-Mail'} ist für 24h vorher eingeplant.</dd></div>}{selectedBooking.note&&<div><dt>Notiz</dt><dd>{selectedBooking.note}</dd></div>}</dl><div className="sheet-actions">{hasOpenDeposit(selectedBooking)&&<button className="sheet-secondary sheet-primary-action" onClick={confirmDeposit}><Check size={17}/> Anzahlung bestätigt</button>}<button className="sheet-secondary" onClick={()=>{setMove({date:selectedBooking.startsAt.slice(0,10),time:''});setSheet('move');}}><CalendarBlank size={17}/> Termin verschieben</button><button className="sheet-danger" onClick={()=>cancelAppointment(selectedBooking.id)}><Trash size={17}/> Termin stornieren</button></div></div></AdminSheet>}
     {sheet==='move'&&selectedBooking&&<AdminSheet title="Termin verschieben" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveMove}><p className="sheet-note">{selectedBooking.firstName} {selectedBooking.lastName} · {selectedBooking.serviceShort}</p><label>Neues Datum<input type="date" value={move.date} onChange={(e)=>setMove({...move,date:e.target.value})}/></label><label>Neue Uhrzeit<input type="time" list="move-slot-suggestions" value={move.time} onChange={(e)=>setMove({...move,time:e.target.value})}/><datalist id="move-slot-suggestions">{moveSlots.map((time)=><option key={time} value={time}/>)}</datalist></label><p className="sheet-note">Auch beim Verschieben darf der Admin jede Uhrzeit setzen. Die Vorschläge sind optional.</p><button className="sheet-primary" disabled={!move.time}>Verschieben</button></form></AdminSheet>}
     {sheet==='notifications'&&<AdminSheet title="Benachrichtigungen" onClose={()=>setSheet(null)}><div className="notification-list">{notifications.length?notifications.map((item)=><article key={item.id} className={!item.readAt?'unread':''}><span><Bell size={17}/></span><div><strong>{item.title}</strong><p>{item.message}</p><small>{new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(item.createdAt))}</small></div></article>):<div className="empty-notifications">Keine neuen Benachrichtigungen.</div>}</div></AdminSheet>}

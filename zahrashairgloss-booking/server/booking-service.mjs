@@ -10,6 +10,12 @@ const minutesOf = (time) => { const [h, m] = time.split(':').map(Number); return
 const timeOf = (total) => `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
 const localIso = (date, time) => `${date}T${time}:00${BERLIN_OFFSET}`;
 const isValidTime = (time) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(time || '');
+const serviceLane = (serviceId) => serviceId === 'balayage' ? 'balayage' : 'regular';
+const addDays = (date, days) => {
+  const next = new Date(`${date}T12:00:00Z`);
+  next.setUTCDate(next.getUTCDate() + days);
+  return `${next.getUTCFullYear()}-${pad(next.getUTCMonth() + 1)}-${pad(next.getUTCDate())}`;
+};
 
 const REGULAR_SERVICE_IDS = new Set(['cut', 'gloss', 'gloss-cut', 'colour']);
 
@@ -90,15 +96,18 @@ function ensureNoAdminConflict(db, { serviceId, date, time, ignoreBookingId = nu
   const duration = serviceDurationMinutes(db, serviceId);
   const startsAt = localIso(date, time);
   const endsAt = localIso(date, timeOf(minutesOf(time) + duration));
+  const lane = serviceLane(serviceId);
   const conflict = db.prepare(`
-    SELECT id
-    FROM bookings
-    WHERE status='confirmed'
-      AND (? IS NULL OR id<>?)
-      AND starts_at < ?
-      AND ends_at > ?
+    SELECT b.id
+    FROM bookings b
+    JOIN services s ON s.id=b.service_id
+    WHERE b.status='confirmed'
+      AND (? IS NULL OR b.id<>?)
+      AND (?='balayage' AND s.id='balayage' OR ?='regular' AND s.id<>'balayage')
+      AND b.starts_at < ?
+      AND b.ends_at > ?
     LIMIT 1
-  `).get(ignoreBookingId, ignoreBookingId, endsAt, startsAt);
+  `).get(ignoreBookingId, ignoreBookingId, lane, lane, endsAt, startsAt);
   if (conflict) throw new Error('Zu dieser Uhrzeit besteht bereits ein anderer Termin.');
   return { startsAt, endsAt };
 }
@@ -149,10 +158,26 @@ export function listAvailableSlots(db, serviceId, date, now = new Date()) {
   const weekday = new Date(`${date}T12:00:00Z`).getUTCDay() || 7;
   const hours = db.prepare('SELECT opens_at,closes_at FROM working_hours WHERE weekday=? AND active=1').get(weekday);
   if (!hours) return [];
+  const lane = serviceLane(serviceId);
   const dayStart = localIso(date, '00:00'); const dayEnd = localIso(date, '23:59');
   const conflicts = [
-    ...db.prepare(`SELECT starts_at,ends_at FROM bookings WHERE status='confirmed' AND starts_at BETWEEN ? AND ?`).all(dayStart,dayEnd),
-    ...db.prepare(`SELECT starts_at,ends_at FROM holds WHERE status='active' AND expires_at>? AND starts_at BETWEEN ? AND ?`).all(now.toISOString(),dayStart,dayEnd),
+    ...db.prepare(`
+      SELECT b.starts_at,b.ends_at
+      FROM bookings b
+      JOIN services s ON s.id=b.service_id
+      WHERE b.status='confirmed'
+        AND (?='balayage' AND s.id='balayage' OR ?='regular' AND s.id<>'balayage')
+        AND b.starts_at BETWEEN ? AND ?
+    `).all(lane, lane, dayStart, dayEnd),
+    ...db.prepare(`
+      SELECT h.starts_at,h.ends_at
+      FROM holds h
+      JOIN services s ON s.id=h.service_id
+      WHERE h.status='active'
+        AND h.expires_at>?
+        AND (?='balayage' AND s.id='balayage' OR ?='regular' AND s.id<>'balayage')
+        AND h.starts_at BETWEEN ? AND ?
+    `).all(now.toISOString(), lane, lane, dayStart, dayEnd),
     ...db.prepare(`SELECT starts_at,ends_at FROM blocked_periods WHERE starts_at < ? AND ends_at > ?`).all(dayEnd,dayStart),
   ];
   const slots = [];
@@ -242,16 +267,27 @@ export function listBlockedPeriods(db,from,to) {
     WHERE starts_at < ? AND ends_at > ? ORDER BY starts_at`).all(localIso(to,'23:59'),localIso(from,'00:00'));
 }
 
-export function createBlockedPeriod(db,{date,reason='Frei'}) {
+export function createBlockedPeriod(db,{date,fromDate,toDate,reason='Frei'}) {
   cleanupExpiredPendingBookings(db);
   touchSchedulers(db);
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(date||''))throw new Error('Bitte einen gültigen freien Tag wählen.');
+  const startDate = fromDate || date;
+  const endDate = toDate || date || fromDate;
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(startDate||'') || !/^\d{4}-\d{2}-\d{2}$/.test(endDate||''))throw new Error('Bitte einen gültigen Zeitraum wählen.');
+  if (startDate > endDate) throw new Error('Das Enddatum muss am selben Tag oder nach dem Startdatum liegen.');
   const existing=db.prepare(`SELECT COUNT(*) AS count FROM bookings WHERE status='confirmed' AND starts_at < ? AND ends_at > ?`)
-    .get(localIso(date,'23:59'),localIso(date,'00:00')).count;
-  if(existing)throw new Error('An diesem Tag bestehen bereits Termine. Bitte diese zuerst verschieben oder stornieren.');
-  const result=db.prepare(`INSERT INTO blocked_periods(starts_at,ends_at,reason) VALUES(?,?,?)`)
-    .run(localIso(date,'00:00'),localIso(date,'23:59'),reason.trim()||'Frei');
-  return {id:Number(result.lastInsertRowid),date,reason:reason.trim()||'Frei'};
+    .get(localIso(endDate,'23:59'),localIso(startDate,'00:00')).count;
+  if(existing)throw new Error('In diesem Zeitraum bestehen bereits Termine. Bitte diese zuerst verschieben oder stornieren.');
+  const insert=db.prepare(`INSERT INTO blocked_periods(starts_at,ends_at,reason) VALUES(?,?,?)`);
+  let current = startDate;
+  let lastId = null;
+  let count = 0;
+  while (current <= endDate) {
+    const result = insert.run(localIso(current,'00:00'),localIso(current,'23:59'),reason.trim()||'Frei');
+    lastId = Number(result.lastInsertRowid);
+    count += 1;
+    current = addDays(current, 1);
+  }
+  return {id:lastId,fromDate:startDate,toDate:endDate,count,reason:reason.trim()||'Frei'};
 }
 
 export function deleteBlockedPeriod(db,id) {
