@@ -10,7 +10,7 @@ $$;
 create or replace function public.get_available_slots(p_service_id text,p_date date)
 returns table(slot_time text)
 language plpgsql
-stable
+volatile
 security definer
 set search_path=public
 as $$
@@ -128,8 +128,8 @@ begin
   insert into public.holds(service_id,starts_at,ends_at,expires_at,status)
   values(p_service_id,v_starts_at,v_ends_at,now(),'converted')
   returning * into h;
-  insert into public.bookings(hold_id,service_id,starts_at,ends_at,first_name,last_name,email,phone,note,status,deposit_cents,payment_status,confirmation_status,payment_reference,terms_version,terms_accepted_at,confirmed_at)
-  values(h.id,p_service_id,v_starts_at,v_ends_at,trim(p_first_name),trim(p_last_name),lower(trim(coalesce(p_email,''))),trim(coalesce(p_phone,'')),nullif(trim(coalesce(p_note,'')),''),'confirmed',0,'manual','confirmed','MANUAL','manual-admin',now(),now())
+  insert into public.bookings(hold_id,service_id,starts_at,ends_at,first_name,last_name,email,phone,note,status,deposit_cents,payment_status,confirmation_status,terms_version,terms_accepted_at,confirmed_at)
+  values(h.id,p_service_id,v_starts_at,v_ends_at,trim(p_first_name),trim(p_last_name),lower(trim(coalesce(p_email,''))),trim(coalesce(p_phone,'')),nullif(trim(coalesce(p_note,'')),''),'confirmed',0,'manual','confirmed','manual-admin',now(),now())
   returning * into b;
   return b.id;
 end $$;
