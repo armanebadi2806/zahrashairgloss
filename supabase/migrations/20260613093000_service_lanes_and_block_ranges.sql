@@ -218,13 +218,13 @@ begin
   insert into public.blocked_periods(starts_at,ends_at,reason)
   select
     day::timestamp at time zone 'Europe/Berlin',
-    (day + 1)::timestamp at time zone 'Europe/Berlin',
+    (day + interval '1 day')::timestamp at time zone 'Europe/Berlin',
     v_reason
   from generate_series(p_from_date,p_to_date,interval '1 day') as day
   where not exists(
     select 1
     from public.blocked_periods x
-    where x.starts_at<((day + 1)::timestamp at time zone 'Europe/Berlin')
+    where x.starts_at<((day + interval '1 day')::timestamp at time zone 'Europe/Berlin')
       and x.ends_at>(day::timestamp at time zone 'Europe/Berlin')
   );
   get diagnostics v_inserted = row_count;

@@ -28,7 +28,7 @@ const clearBookingOverride = (id) => {
 };
 const isMissingFunctionError = (error) => /Could not find the function public\.admin_mark_booking_paid|schema cache/i.test(error?.message || '');
 const isBlockedUpdateError = (error) => /permission denied for table bookings/i.test(error?.message || '');
-const isMissingBlockRangeFunctionError = (error) => /public\.admin_create_blocks|schema cache/i.test(error?.message || '');
+const isMissingBlockRangeFunctionError = (error) => /public\.admin_create_blocks|schema cache|operator does not exist: timestamp with time zone \+ integer/i.test(error?.message || '');
 const supabaseRequest = async (pathname, { method='GET', body, token='' }={}) => {
   const response = await fetch(`${SUPABASE_URL}${pathname}`, {
     method,
