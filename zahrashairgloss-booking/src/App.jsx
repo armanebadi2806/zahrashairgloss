@@ -29,7 +29,7 @@ const clearBookingOverride = (id) => {
 const isMissingFunctionError = (error) => /Could not find the function public\.admin_mark_booking_paid|schema cache/i.test(error?.message || '');
 const isBlockedUpdateError = (error) => /permission denied for table bookings/i.test(error?.message || '');
 const isMissingBlockRangeFunctionError = (error) => /public\.admin_create_blocks|schema cache/i.test(error?.message || '');
-const supabaseRequest = async (pathname, { method='GET', body, token=sessionToken() }={}) => {
+const supabaseRequest = async (pathname, { method='GET', body, token='' }={}) => {
   const response = await fetch(`${SUPABASE_URL}${pathname}`, {
     method,
     headers: {
@@ -44,6 +44,7 @@ const supabaseRequest = async (pathname, { method='GET', body, token=sessionToke
   return data;
 };
 const rpc = (name, params={}, token) => supabaseRequest(`/rest/v1/rpc/${name}`, {method:'POST',body:params,token});
+const adminRpc = (name, params={}) => rpc(name, params, sessionToken());
 const invokeEdgeFunction = async (name, { method='POST', body, token=sessionToken() }={}) => {
   const response = await fetch(`${SUPABASE_URL}/functions/v1/${name}`, {
     method,
@@ -131,27 +132,27 @@ const supabaseApi = async (path, options={}) => {
     if(!sessionToken())return {authenticated:false,configured:true};
     try{await supabaseRequest('/auth/v1/user',{token:sessionToken()});return {authenticated:true,configured:true};}catch{window.localStorage.removeItem('zahra_admin_token');return {authenticated:false,configured:true};}
   }
-  if(path.startsWith('/api/admin/calendar')){const p=new URLSearchParams(path.split('?')[1]);const [bookings,blocks]=await Promise.all([rpc('admin_calendar',{p_from:p.get('from'),p_to:p.get('to')}),rpc('admin_blocks',{p_from:p.get('from'),p_to:p.get('to')})]);return {bookings:bookings.map(normalizeBooking),blocks:blocks.map(normalizeBlock)};}
-  if(path==='/api/admin/notifications')return {notifications:(await rpc('admin_notifications')).map(normalizeNotification)};
-  if(path==='/api/admin/notifications/read'&&method==='POST'){await rpc('admin_mark_notifications_read');return {read:true};}
+  if(path.startsWith('/api/admin/calendar')){const p=new URLSearchParams(path.split('?')[1]);const [bookings,blocks]=await Promise.all([adminRpc('admin_calendar',{p_from:p.get('from'),p_to:p.get('to')}),adminRpc('admin_blocks',{p_from:p.get('from'),p_to:p.get('to')})]);return {bookings:bookings.map(normalizeBooking),blocks:blocks.map(normalizeBlock)};}
+  if(path==='/api/admin/notifications')return {notifications:(await adminRpc('admin_notifications')).map(normalizeNotification)};
+  if(path==='/api/admin/notifications/read'&&method==='POST'){await adminRpc('admin_mark_notifications_read');return {read:true};}
   if(path==='/api/admin/blocks'&&method==='POST'){
     const fromDate = payload.fromDate || payload.date;
     const toDate = payload.toDate || payload.date || payload.fromDate;
     try{
-      const count = await rpc('admin_create_blocks',{p_from_date:fromDate,p_to_date:toDate,p_reason:payload.reason});
+      const count = await adminRpc('admin_create_blocks',{p_from_date:fromDate,p_to_date:toDate,p_reason:payload.reason});
       return {block:{count}};
     }catch(error){
       if (!isMissingBlockRangeFunctionError(error)) throw error;
       const dates = eachDateInRange(fromDate,toDate);
-      await Promise.all(dates.map((value)=>rpc('admin_create_block',{p_date:value,p_reason:payload.reason})));
+      await Promise.all(dates.map((value)=>adminRpc('admin_create_block',{p_date:value,p_reason:payload.reason})));
       return {block:{count:dates.length}};
     }
   }
-  if(path.startsWith('/api/admin/blocks/')&&method==='DELETE'){await rpc('admin_delete_block',{p_id:Number(path.split('/').pop())});return {deleted:true};}
+  if(path.startsWith('/api/admin/blocks/')&&method==='DELETE'){await adminRpc('admin_delete_block',{p_id:Number(path.split('/').pop())});return {deleted:true};}
   if(path.startsWith('/api/admin/bookings/')&&path.endsWith('/payment')&&method==='POST'){
     const id=path.split('/')[4];
     try{
-      await rpc('admin_mark_booking_paid',{p_id:id});
+      await adminRpc('admin_mark_booking_paid',{p_id:id});
       try{
         await invokeEdgeFunction('send-booking-final-confirmation',{body:{bookingId:id}});
         return {paid:true,emailSent:true};
@@ -164,9 +165,9 @@ const supabaseApi = async (path, options={}) => {
     }
     return {paid:true};
   }
-  if(path.startsWith('/api/admin/bookings/')&&method==='DELETE'){await rpc('admin_cancel_booking',{p_id:path.split('/').pop()});return {cancelled:true};}
-  if(path==='/api/admin/bookings'&&method==='POST')return {booking:await rpc('admin_create_booking',{p_service_id:payload.serviceId,p_date:payload.date,p_time:payload.time,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email||'',p_phone:payload.customer.phone||'',p_note:payload.customer.note||''})};
-  if(path.startsWith('/api/admin/bookings/')&&method==='PATCH')return {booking:await rpc('admin_move_booking',{p_id:path.split('/').pop(),p_date:payload.date,p_time:payload.time})};
+  if(path.startsWith('/api/admin/bookings/')&&method==='DELETE'){await adminRpc('admin_cancel_booking',{p_id:path.split('/').pop()});return {cancelled:true};}
+  if(path==='/api/admin/bookings'&&method==='POST')return {booking:await adminRpc('admin_create_booking',{p_service_id:payload.serviceId,p_date:payload.date,p_time:payload.time,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email||'',p_phone:payload.customer.phone||'',p_note:payload.customer.note||''})};
+  if(path.startsWith('/api/admin/bookings/')&&method==='PATCH')return {booking:await adminRpc('admin_move_booking',{p_id:path.split('/').pop(),p_date:payload.date,p_time:payload.time})};
   throw new Error('Diese Funktion ist noch nicht verfügbar.');
 };
 
