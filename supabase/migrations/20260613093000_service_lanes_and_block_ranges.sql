@@ -103,6 +103,9 @@ declare
 begin
   perform public.expire_pending_bookings();
   if not public.is_admin() then raise exception 'Nicht autorisiert.'; end if;
+  if extract(isodow from p_date) = 7 then
+    raise exception 'Sonntags werden keine Termine angeboten.';
+  end if;
   if p_date is null or coalesce(p_time,'') !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' then
     raise exception 'Bitte eine gültige Uhrzeit im Format HH:MM wählen.';
   end if;
@@ -151,6 +154,9 @@ declare
 begin
   perform public.expire_pending_bookings();
   if not public.is_admin() then raise exception 'Nicht autorisiert.'; end if;
+  if extract(isodow from p_date) = 7 then
+    raise exception 'Sonntags werden keine Termine angeboten.';
+  end if;
   if p_date is null or coalesce(p_time,'') !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' then
     raise exception 'Bitte eine gültige Uhrzeit im Format HH:MM wählen.';
   end if;

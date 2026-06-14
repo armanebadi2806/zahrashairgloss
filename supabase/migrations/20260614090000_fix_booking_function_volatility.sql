@@ -31,6 +31,9 @@ declare
 begin
   perform public.expire_pending_bookings();
   if not public.is_admin() then raise exception 'Nicht autorisiert.'; end if;
+  if extract(isodow from p_date) = 7 then
+    raise exception 'Sonntags werden keine Termine angeboten.';
+  end if;
   if p_date is null or coalesce(p_time,'') !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' then
     raise exception 'Bitte eine gueltige Uhrzeit im Format HH:MM waehlen.';
   end if;
@@ -63,3 +66,57 @@ begin
 end $$;
 
 grant execute on function public.admin_create_booking(text,date,text,text,text,text,text,text) to authenticated;
+
+create or replace function public.admin_move_booking(p_id uuid,p_date date,p_time text)
+returns uuid
+language plpgsql
+security definer
+set search_path=public
+as $$
+declare
+  b public.bookings;
+  v_duration integer;
+  v_lane text;
+  v_start_local timestamp;
+  v_end_local timestamp;
+  v_starts_at timestamptz;
+  v_ends_at timestamptz;
+begin
+  perform public.expire_pending_bookings();
+  if not public.is_admin() then raise exception 'Nicht autorisiert.'; end if;
+  if extract(isodow from p_date) = 7 then
+    raise exception 'Sonntags werden keine Termine angeboten.';
+  end if;
+  if p_date is null or coalesce(p_time,'') !~ '^([01][0-9]|2[0-3]):[0-5][0-9]$' then
+    raise exception 'Bitte eine gueltige Uhrzeit im Format HH:MM waehlen.';
+  end if;
+  select * into b from public.bookings where id=p_id and status='confirmed' for update;
+  if b is null then raise exception 'Termin wurde nicht gefunden.'; end if;
+  select duration_minutes, public.service_lane(id) into v_duration, v_lane
+  from public.services
+  where id=b.service_id and active=true;
+  v_start_local := p_date + p_time::time;
+  v_end_local := v_start_local + make_interval(mins => v_duration);
+  v_starts_at := v_start_local at time zone 'Europe/Berlin';
+  v_ends_at := v_end_local at time zone 'Europe/Berlin';
+  if exists(
+    select 1
+    from public.bookings b2
+    join public.services s on s.id=b2.service_id
+    where b2.status='confirmed'
+      and b2.id<>p_id
+      and public.service_lane(s.id)=v_lane
+      and b2.starts_at<v_ends_at
+      and b2.ends_at>v_starts_at
+  ) then
+    raise exception 'Zu dieser Uhrzeit besteht bereits ein anderer Termin.';
+  end if;
+  update public.bookings
+  set starts_at=v_starts_at,
+      ends_at=v_ends_at,
+      status='confirmed'
+  where id=p_id;
+  return p_id;
+end $$;
+
+grant execute on function public.admin_move_booking(uuid,date,text) to authenticated;
