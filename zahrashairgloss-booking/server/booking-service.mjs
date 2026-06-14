@@ -19,9 +19,9 @@ const addDays = (date, days) => {
 
 const REGULAR_SERVICE_IDS = new Set(['cut', 'gloss', 'gloss-cut', 'colour']);
 
-function adminNotification(db, bookingId, type, title, message, createdAt = new Date().toISOString()) {
-  db.prepare(`INSERT INTO notifications(id,booking_id,type,title,message,created_at) VALUES(?,?,?,?,?,?)`).run(
-    randomUUID(), bookingId, type, title, message, createdAt,
+function adminNotification(db, bookingId, type, title, message, createdAt = new Date().toISOString(), details = {}) {
+  db.prepare(`INSERT INTO notifications(id,booking_id,type,title,message,appointment_starts_at,service_name,created_at) VALUES(?,?,?,?,?,?,?,?)`).run(
+    randomUUID(), bookingId, type, title, message, details.appointmentStartsAt || null, details.serviceName || null, createdAt,
   );
 }
 
@@ -223,8 +223,12 @@ export function confirmDemoPayment(db, { holdId, customer, acceptedTermsVersion 
       booking.id,hold.id,hold.service_id,hold.starts_at,hold.ends_at,customer.firstName.trim(),customer.lastName.trim(),
       customer.email.trim(),customer.phone.trim(),customer.note?.trim()||null,booking.paymentReference,acceptedTermsVersion,now.toISOString(),booking.createdAt);
     db.prepare(`UPDATE holds SET status='converted' WHERE id=?`).run(hold.id); db.exec('COMMIT');
+    const service = db.prepare('SELECT name FROM services WHERE id=?').get(hold.service_id);
     adminNotification(db, booking.id, 'new_booking', 'Neue Online-Buchung',
-      `${customer.firstName.trim()} ${customer.lastName.trim()} hat einen Termin gebucht.`, now.toISOString());
+      `${customer.firstName.trim()} ${customer.lastName.trim()} hat einen Termin gebucht.`, now.toISOString(), {
+        appointmentStartsAt: hold.starts_at,
+        serviceName: service?.name,
+      });
     queueCustomerMessage(db, {
       bookingId: booking.id,
       kind: 'reservation_confirmation',
@@ -355,7 +359,7 @@ export function rescheduleBooking(db,id,{date,time},now=new Date()) {
 export function listNotifications(db) {
   cleanupExpiredPendingBookings(db);
   touchSchedulers(db);
-  return db.prepare(`SELECT id,booking_id AS bookingId,type,title,message,read_at AS readAt,created_at AS createdAt
+  return db.prepare(`SELECT id,booking_id AS bookingId,type,title,message,appointment_starts_at AS appointmentStartsAt,service_name AS serviceName,read_at AS readAt,created_at AS createdAt
     FROM notifications ORDER BY created_at DESC LIMIT 30`).all();
 }
 

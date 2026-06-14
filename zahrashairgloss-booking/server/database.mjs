@@ -54,6 +54,8 @@ export function createDatabase(filename) {
       type TEXT NOT NULL,
       title TEXT NOT NULL,
       message TEXT NOT NULL,
+      appointment_starts_at TEXT,
+      service_name TEXT,
       read_at TEXT,
       created_at TEXT NOT NULL
     );
@@ -68,9 +70,11 @@ export function createDatabase(filename) {
       body TEXT NOT NULL,
       send_after TEXT NOT NULL,
       sent_at TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
       created_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS customer_messages_pending_idx ON customer_messages(sent_at, send_after);
+    CREATE INDEX IF NOT EXISTS customer_messages_pending_idx ON customer_messages(sent_at, send_after, attempts);
     CREATE TABLE IF NOT EXISTS admin_sessions (
       token_hash TEXT PRIMARY KEY,
       expires_at TEXT NOT NULL,
@@ -88,6 +92,10 @@ export function createDatabase(filename) {
   addColumn('bookings', 'confirmed_at TEXT');
   addColumn('bookings', 'reminder_queued_at TEXT');
   addColumn('bookings', "reminder_channel TEXT NOT NULL DEFAULT 'email'");
+  addColumn('notifications', 'appointment_starts_at TEXT');
+  addColumn('notifications', 'service_name TEXT');
+  addColumn('customer_messages', 'attempts INTEGER NOT NULL DEFAULT 0');
+  addColumn('customer_messages', 'last_error TEXT');
 
   const insertService = db.prepare(`
     INSERT INTO services (id, name, short_name, duration_minutes) VALUES (?, ?, ?, ?)

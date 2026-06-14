@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Bell, CalendarBlank, CaretLeft, CaretRight, Check, Clock, Plus, Scissors, Sparkle, Trash, User, X } from '@phosphor-icons/react';
 
 const USE_SUPABASE = !['localhost', '127.0.0.1'].includes(window.location.hostname);
@@ -9,6 +9,12 @@ const PAYPAL_EMAIL = 'zahrashairgloas@gmail.com';
 const asset = (path) => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`;
 
 const sessionToken = () => window.localStorage.getItem('zahra_admin_token') || '';
+const seenBookingAlertsKey = 'zahra_seen_booking_alerts';
+const readSeenBookingAlerts = () => {
+  try { return new Set(JSON.parse(window.localStorage.getItem(seenBookingAlertsKey) || '[]')); }
+  catch { return new Set(); }
+};
+const rememberBookingAlert = (ids) => window.localStorage.setItem(seenBookingAlertsKey, JSON.stringify([...ids].slice(-100)));
 const bookingOverridesKey = 'zahra_booking_overrides';
 const readBookingOverrides = () => {
   try { return JSON.parse(window.localStorage.getItem(bookingOverridesKey) || '{}'); }
@@ -99,7 +105,17 @@ const normalizeBooking = (item) => {
 };
 const hasOpenDeposit = (booking) => booking.confirmationStatus !== 'confirmed' && booking.paymentStatus !== 'paid' && booking.paymentStatus !== 'manual';
 const normalizeBlock = (item) => ({...item,startsAt:berlinIso(readField(item, 'starts_at', 'startsAt')),endsAt:berlinIso(readField(item, 'ends_at', 'endsAt'))});
-const normalizeNotification = (item) => ({...item,bookingId:readField(item, 'booking_id', 'bookingId'),readAt:readField(item, 'read_at', 'readAt'),createdAt:readField(item, 'created_at', 'createdAt')});
+const normalizeNotification = (item) => {
+  const appointmentStartsAt = readField(item, 'appointment_starts_at', 'appointmentStartsAt');
+  return {
+    ...item,
+    bookingId: readField(item, 'booking_id', 'bookingId'),
+    readAt: readField(item, 'read_at', 'readAt'),
+    createdAt: readField(item, 'created_at', 'createdAt'),
+    appointmentStartsAt: appointmentStartsAt ? berlinIso(appointmentStartsAt) : null,
+    serviceName: readField(item, 'service_name', 'serviceName'),
+  };
+};
 const openPayPalSendMoney = () => window.open('https://www.paypal.com/us/digital-wallet/send-receive-money/send-money','_blank','noopener,noreferrer');
 
 const supabaseApi = async (path, options={}) => {
@@ -338,6 +354,9 @@ function Admin({ onExit, onLoggedOut }) {
   const [selectedBooking,setSelectedBooking]=useState(null);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
+  const [bookingAlert,setBookingAlert]=useState(null);
+  const [bookingSearch,setBookingSearch]=useState('');
+  const seenBookingAlerts=useRef(readSeenBookingAlerts());
   const [manual,setManual]=useState({serviceId:'',date:isoDate(new Date()),time:'',firstName:'',lastName:'',email:'',phone:'',note:''});
   const [manualSlots,setManualSlots]=useState([]);
   const [freeDay,setFreeDay]=useState({fromDate:isoDate(new Date()),toDate:isoDate(new Date()),reason:'Frei'});
@@ -346,15 +365,33 @@ function Admin({ onExit, onLoggedOut }) {
   const weekDays=Array.from({length:7},(_,index)=>addDays(weekStart,index));
   const weekEnd=isoDate(weekDays[6]);
 
-  const refresh=async()=>{setError('');try{const [calendarData,notificationData,serviceData]=await Promise.all([api(`/api/admin/calendar?from=${isoDate(weekStart)}&to=${weekEnd}`),api('/api/admin/notifications'),api('/api/services')]);setBookings(calendarData.bookings);setBlocks(calendarData.blocks);setNotifications(notificationData.notifications);setServices(serviceData.services);setManual((value)=>({...value,serviceId:value.serviceId||serviceData.services[0]?.id||''}));}catch(err){setError(err.message);}};
+  const receiveNotifications=(items)=>{
+    setNotifications(items);
+    const nextAlert=items.find((item)=>(item.type==='new_booking'||item.title==='Neue Online-Buchung')&&!item.readAt&&item.appointmentStartsAt&&!seenBookingAlerts.current.has(item.id));
+    if(!nextAlert)return;
+    seenBookingAlerts.current.add(nextAlert.id);
+    rememberBookingAlert(seenBookingAlerts.current);
+    setBookingAlert(nextAlert);
+  };
+  const refresh=async()=>{setError('');try{const [calendarData,notificationData,serviceData]=await Promise.all([api(`/api/admin/calendar?from=${isoDate(weekStart)}&to=${weekEnd}`),api('/api/admin/notifications'),api('/api/services')]);setBookings(calendarData.bookings);setBlocks(calendarData.blocks);receiveNotifications(notificationData.notifications);setServices(serviceData.services);setManual((value)=>({...value,serviceId:value.serviceId||serviceData.services[0]?.id||''}));}catch(err){setError(err.message);}};
   useEffect(()=>{refresh();},[weekStart]);
-  useEffect(()=>{const timer=window.setInterval(()=>{api('/api/admin/notifications').then((data)=>setNotifications(data.notifications)).catch(()=>{});},20000);return()=>window.clearInterval(timer);},[]);
+  useEffect(()=>{const check=()=>api('/api/admin/notifications').then((data)=>receiveNotifications(data.notifications)).catch(()=>{});const timer=window.setInterval(check,10000);const onVisible=()=>{if(document.visibilityState==='visible')check();};document.addEventListener('visibilitychange',onVisible);return()=>{window.clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};},[]);
   useEffect(()=>{if(!manual.serviceId||!manual.date)return;api(`/api/availability?serviceId=${manual.serviceId}&date=${manual.date}`).then((data)=>setManualSlots(data.slots)).catch((err)=>setError(err.message));},[manual.serviceId,manual.date,sheet]);
   useEffect(()=>{if(sheet!=='move'||!selectedBooking||!move.date)return;api(`/api/availability?serviceId=${selectedBooking.serviceId}&date=${move.date}`).then((data)=>setMoveSlots(data.slots)).catch((err)=>setError(err.message));},[sheet,selectedBooking,move.date]);
 
   const dayBookings=bookings.filter((item)=>item.startsAt.slice(0,10)===selectedDate);
   const dayBlock=blocks.find((item)=>item.startsAt.slice(0,10)===selectedDate);
   const unread=notifications.filter((item)=>!item.readAt).length;
+  const bookingById=new Map(bookings.map((item)=>[item.id,item]));
+  const bookingSearchTerm=bookingSearch.trim().toLowerCase();
+  const bookingSearchResults=bookingSearchTerm
+    ? bookings.filter((item)=>{
+        const haystack=[item.firstName,item.lastName,`${item.firstName} ${item.lastName}`,`${item.lastName} ${item.firstName}`]
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(bookingSearchTerm);
+      }).sort((a,b)=>a.startsAt.localeCompare(b.startsAt))
+    : [];
   const selectedView=dateView(selectedDate);
   const selectedDateIsSunday = isSunday(selectedDate);
   const manualDateView=manual.date ? dateView(manual.date) : null;
@@ -370,14 +407,17 @@ function Admin({ onExit, onLoggedOut }) {
   const cancelAppointment=async(id)=>{if(!window.confirm('Termin wirklich stornieren?'))return;await api(`/api/admin/bookings/${id}`,{method:'DELETE'});setSelectedBooking(null);setSheet(null);flash('Termin wurde storniert.');await refresh();};
   const saveMove=async(event)=>{event.preventDefault();try{await api(`/api/admin/bookings/${selectedBooking.id}`,{method:'PATCH',body:JSON.stringify(move)});setSheet(null);setSelectedDate(move.date);flash('Termin wurde verschoben.');await refresh();}catch(err){setError(err.message);}};
   const confirmDeposit=async()=>{try{const result=await api(`/api/admin/bookings/${selectedBooking.id}/payment`,{method:'POST',body:'{}'});markBookingConfirmedLocally(selectedBooking.id);setSelectedBooking((current)=>current?{...current,paymentStatus:'paid',confirmationStatus:'confirmed'}:current);flash(result?.emailSent===false?'Anzahlung bestätigt, aber die Bestätigungsmail konnte nicht gesendet werden.':'Anzahlung bestätigt. Finale Bestätigung ist vorbereitet.');await refresh();}catch(err){setError(err.message);}};
-  const openNotifications=async()=>{setSheet('notifications');if(unread){await api('/api/admin/notifications/read',{method:'POST',body:'{}'});setNotifications((items)=>items.map((item)=>({...item,readAt:item.readAt||new Date().toISOString()})));}};
+  const openNotifications=async()=>{setBookingAlert(null);setSheet('notifications');if(unread){await api('/api/admin/notifications/read',{method:'POST',body:'{}'});setNotifications((items)=>items.map((item)=>({...item,readAt:item.readAt||new Date().toISOString()})));}};
+  const openBookingMatch=(booking)=>{setBookingSearch(`${booking.firstName} ${booking.lastName}`);setWeekStart(startMonday(new Date(`${booking.startsAt.slice(0,10)}T12:00:00`)));setSelectedDate(booking.startsAt.slice(0,10));setSelectedBooking(booking);setSheet('details');};
   const logout=async()=>{await api('/api/admin/logout',{method:'POST',body:'{}'});onLoggedOut();};
 
   return <main className="admin-workspace">
     <header className="mobile-admin-header"><div className="admin-profile"><img src={asset('/assets/zahra-portrait.jpg')} alt="Zahra"/><div><span>Dein Studio</span><strong>Zahrashairgloss</strong></div></div><div className="admin-header-actions"><button onClick={openNotifications} aria-label="Benachrichtigungen"><Bell size={21}/>{unread>0&&<i>{unread}</i>}</button><button onClick={logout} aria-label="Sicher abmelden"><ArrowRight size={21}/></button></div></header>
+    {bookingAlert&&<aside className="admin-booking-alert" role="alert" aria-live="assertive"><span className="booking-alert-icon"><Bell size={21} weight="fill"/></span><div><small>Neue Online-Buchung</small><strong>{bookingAlert.message?.split(' hat ')[0]||'Ein Kunde'}</strong><p>{new Intl.DateTimeFormat('de-DE',{weekday:'long',day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date(bookingAlert.appointmentStartsAt))} · {bookingAlert.appointmentStartsAt.slice(11,16)} Uhr</p>{bookingAlert.serviceName&&<em>{bookingAlert.serviceName}</em>}<button onClick={openNotifications}>Benachrichtigung öffnen</button></div><button className="booking-alert-close" onClick={()=>setBookingAlert(null)} aria-label="Hinweis schließen"><X size={17}/></button></aside>}
     <section className="admin-content">
       {error&&<div className="admin-message error" role="alert">{error}<button onClick={()=>setError('')}><X size={15}/></button></div>}{notice&&<div className="admin-message success"><Check size={16}/>{notice}</div>}
-      <div className="admin-greeting"><div><span className="eyebrow">Kalender</span><h1>Hallo Zahra.</h1><p>{dayBookings.length?`${dayBookings.length} ${dayBookings.length===1?'Termin':'Termine'} am ausgewählten Tag.`:'Der ausgewählte Tag ist noch frei.'}</p></div><button className="today-button" onClick={()=>{const today=new Date();setWeekStart(startMonday(today));setSelectedDate(isoDate(today));}}>Heute</button></div>
+      <div className="admin-greeting"><div><span className="eyebrow">Kalender</span><h1>Hallo Zahra.</h1><p>{bookingSearchTerm?`${bookingSearchResults.length} Treffer für „${bookingSearch.trim()}“.`:dayBookings.length?`${dayBookings.length} ${dayBookings.length===1?'Termin':'Termine'} am ausgewählten Tag.`:'Der ausgewählte Tag ist noch frei.'}</p></div><button className="today-button" onClick={()=>{const today=new Date();setWeekStart(startMonday(today));setSelectedDate(isoDate(today));}}>Heute</button></div>
+      <section className="admin-search-panel"><label className="admin-search"><span>Termin suchen</span><input type="search" value={bookingSearch} onChange={(e)=>setBookingSearch(e.target.value)} placeholder="Name eingeben, z. B. Anna Sommer"/>{bookingSearch&&<button type="button" onClick={()=>setBookingSearch('')}>Löschen</button>}</label>{bookingSearchTerm&&<div className="admin-search-results">{bookingSearchResults.length?bookingSearchResults.map((item)=><button key={item.id} type="button" className="search-result" onClick={()=>openBookingMatch(item)}><strong>{item.firstName} {item.lastName}</strong><span>{new Intl.DateTimeFormat('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date(item.startsAt))} · {item.startsAt.slice(11,16)} Uhr</span><small>{item.serviceShort}</small></button>):<div className="empty-search">Kein Termin mit diesem Namen gefunden.</div>}</div>}</section>
 
       <div className="week-card"><div className="week-toolbar"><button onClick={()=>changeWeek(-7)} aria-label="Vorherige Woche"><CaretLeft size={19}/></button><strong>{new Intl.DateTimeFormat('de-DE',{month:'long',year:'numeric'}).format(weekStart)}</strong><button onClick={()=>changeWeek(7)} aria-label="Nächste Woche"><CaretRight size={19}/></button></div><div className="week-strip">{weekDays.map((day)=>{const value=isoDate(day);const count=bookings.filter((item)=>item.startsAt.slice(0,10)===value).length;const blocked=blocks.some((item)=>item.startsAt.slice(0,10)===value)||isSunday(value);return <button key={value} className={`${selectedDate===value?'selected':''} ${blocked?'blocked':''}`} onClick={()=>setSelectedDate(value)}><span>{new Intl.DateTimeFormat('de-DE',{weekday:'short'}).format(day).replace('.','')}</span><strong>{day.getDate()}</strong>{blocked?<i className="off-dot"/>:count>0?<i className="count-dot">{count}</i>:<i/>}</button>;})}</div></div>
 
@@ -393,7 +433,7 @@ function Admin({ onExit, onLoggedOut }) {
     {sheet==='free-day'&&<AdminSheet title="Freie Tage eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveFreeDay}><div className="form-pair"><label>Von<input type="date" value={freeDay.fromDate} onChange={(e)=>setFreeDay((current)=>{const fromDate=e.target.value;return {...current,fromDate,toDate:current.toDate<fromDate?fromDate:current.toDate};})}/></label><label>Bis<input type="date" min={freeDay.fromDate} value={freeDay.toDate} onChange={(e)=>setFreeDay({...freeDay,toDate:e.target.value})}/></label></div><label>Grund<select value={freeDay.reason} onChange={(e)=>setFreeDay({...freeDay,reason:e.target.value})}><option>Frei</option><option>Urlaub</option><option>Krank</option><option>Fortbildung</option><option>Privater Termin</option></select></label><p className="sheet-note">Der Zeitraum verschwindet sofort aus der Online-Buchung. Bestehende Termine im Zeitraum müssen vorher verschoben oder storniert werden.</p><button className="sheet-primary">{eachDateInRange(freeDay.fromDate,freeDay.toDate).length>1?'Zeitraum blockieren':'Tag blockieren'}</button></form></AdminSheet>}
     {sheet==='details'&&selectedBooking&&<AdminSheet title="Termindetails" onClose={()=>setSheet(null)}><div className="appointment-detail"><div className="detail-person"><span>{selectedBooking.firstName[0]}{selectedBooking.lastName[0]}</span><div><h3>{selectedBooking.firstName} {selectedBooking.lastName}</h3><p>{selectedBooking.phone||'Keine Telefonnummer'}</p></div></div><dl><div><dt>Uhrzeit Buchung</dt><dd>{selectedBooking.startsAt.slice(11,16)} Uhr</dd></div><div><dt>Service</dt><dd>{selectedBooking.serviceName}</dd></div><div><dt>Status</dt><dd><span className={`status-pill ${selectedBooking.confirmationStatus==='confirmed'?'confirmed':selectedBooking.paymentStatus==='paid'?'checked':'pending'}`}>{selectedBooking.confirmationStatus==='confirmed'?'Final bestätigt':selectedBooking.paymentStatus==='paid'?'Anzahlung geprüft, noch offen':'Reservierung vorgemerkt · 30 € offen'}</span></dd></div>{selectedBooking.reminderQueuedAt&&<div><dt>Erinnerung</dt><dd>{selectedBooking.reminderChannel==='sms'?'SMS':'E-Mail'} ist für 24h vorher eingeplant.</dd></div>}{selectedBooking.note&&<div><dt>Notiz</dt><dd>{selectedBooking.note}</dd></div>}</dl><div className="sheet-actions">{hasOpenDeposit(selectedBooking)&&<button className="sheet-secondary sheet-primary-action" onClick={confirmDeposit}><Check size={17}/> Anzahlung bestätigt</button>}<button className="sheet-secondary" onClick={()=>{setMove({date:selectedBooking.startsAt.slice(0,10),time:''});setSheet('move');}}><CalendarBlank size={17}/> Termin verschieben</button><button className="sheet-danger" onClick={()=>cancelAppointment(selectedBooking.id)}><Trash size={17}/> Termin stornieren</button></div></div></AdminSheet>}
     {sheet==='move'&&selectedBooking&&<AdminSheet title="Termin verschieben" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveMove}><p className="sheet-note">{selectedBooking.firstName} {selectedBooking.lastName} · {selectedBooking.serviceShort}</p><label>Neues Datum<input type="date" value={move.date} onChange={(e)=>setMove({...move,date:e.target.value})}/></label><label>Neue Uhrzeit<input type="time" list="move-slot-suggestions" value={move.time} onChange={(e)=>setMove({...move,time:e.target.value})}/><datalist id="move-slot-suggestions">{moveSlots.map((time)=><option key={time} value={time}/>)}</datalist></label>{moveDateIsSunday&&<p className="sheet-note">Sonntag bleibt immer frei. Auf Sonntage kann nicht verschoben werden.</p>}<p className="sheet-note">Auch beim Verschieben darf der Admin jede Uhrzeit setzen. Die Vorschläge sind optional.</p><button className="sheet-primary" disabled={!move.time||moveDateIsSunday}>Verschieben</button></form></AdminSheet>}
-    {sheet==='notifications'&&<AdminSheet title="Benachrichtigungen" onClose={()=>setSheet(null)}><div className="notification-list">{notifications.length?notifications.map((item)=><article key={item.id} className={!item.readAt?'unread':''}><span><Bell size={17}/></span><div><strong>{item.title}</strong><p>{item.message}</p><small>{new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(item.createdAt))}</small></div></article>):<div className="empty-notifications">Keine neuen Benachrichtigungen.</div>}</div></AdminSheet>}
+    {sheet==='notifications'&&<AdminSheet title="Benachrichtigungen" onClose={()=>setSheet(null)}><div className="notification-list">{notifications.length?notifications.map((item)=>{const relatedBooking=bookingById.get(item.bookingId);const appointmentStartsAt=item.appointmentStartsAt||relatedBooking?.startsAt||null;const serviceName=item.serviceName||relatedBooking?.serviceName||relatedBooking?.serviceShort||'';return <article key={item.id} className={!item.readAt?'unread':''}><span><Bell size={17}/></span><div><strong>{item.title}</strong><p>{item.message}</p>{appointmentStartsAt&&<b>{new Intl.DateTimeFormat('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date(appointmentStartsAt))} · {appointmentStartsAt.slice(11,16)} Uhr{serviceName?` · ${serviceName}`:''}</b>}<small>{new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(item.createdAt))}</small></div></article>; }):<div className="empty-notifications">Keine neuen Benachrichtigungen.</div>}</div></AdminSheet>}
   </main>;
 }
 

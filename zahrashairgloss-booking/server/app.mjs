@@ -5,13 +5,17 @@ import { createServer } from 'node:http';
 import { createDatabase } from './database.mjs';
 import { createAuth } from './auth.mjs';
 import { TERMS_VERSION, cancelBooking, confirmDemoPayment, createBlockedPeriod, createHold, createManualBooking, deleteBlockedPeriod, listAvailableSlots, listBlockedPeriods, listBookableDates, listBookings, listBookingsRange, listNotifications, listServices, markNotificationsRead, markBookingPaid, releaseHold, rescheduleBooking } from './booking-service.mjs';
+import { createMailTransportFromEnv, flushQueuedCustomerMessages } from './mail.mjs';
 
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
 try { process.loadEnvFile(join(root,'.env')); } catch {}
 const db=createDatabase(process.env.DATABASE_PATH||join(root,'data','zahrashairgloss.sqlite'));
 const auth=createAuth(db);
+const mailTransport=createMailTransportFromEnv(process.env);
 const send=(res,status,body)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
 async function readJson(req){let body='';for await(const chunk of req){body+=chunk;if(body.length>50_000)throw new Error('Anfrage ist zu groß.');}return body?JSON.parse(body):{};}
+let mailDrainPromise=null;
+const flushMailQueue=()=>{if(mailDrainPromise)return mailDrainPromise;mailDrainPromise=flushQueuedCustomerMessages(db,mailTransport).catch((error)=>{console.error('Mailversand fehlgeschlagen:',error.message);}).finally(()=>{mailDrainPromise=null;});return mailDrainPromise;};
 
 async function api(req,res,url){
   try{
@@ -21,7 +25,7 @@ async function api(req,res,url){
     if(req.method==='GET'&&url.pathname==='/api/availability')return send(res,200,{slots:listAvailableSlots(db,url.searchParams.get('serviceId'),url.searchParams.get('date'))});
     if(req.method==='POST'&&url.pathname==='/api/holds')return send(res,201,{hold:createHold(db,await readJson(req))});
     if(req.method==='DELETE'&&url.pathname.startsWith('/api/holds/')){releaseHold(db,url.pathname.split('/').pop());return send(res,200,{released:true});}
-    if(req.method==='POST'&&url.pathname==='/api/bookings/confirm-demo-payment')return send(res,201,{booking:confirmDemoPayment(db,await readJson(req))});
+    if(req.method==='POST'&&url.pathname==='/api/bookings/confirm-demo-payment'){const booking=confirmDemoPayment(db,await readJson(req));void flushMailQueue();return send(res,201,{booking});}
     if(req.method==='GET'&&url.pathname==='/api/admin/session')return send(res,200,{authenticated:Boolean(auth.session(req)),configured:auth.configured});
     if(req.method==='POST'&&url.pathname==='/api/admin/login'){auth.login(req,res,(await readJson(req)).password);return send(res,200,{authenticated:true});}
     if(req.method==='POST'&&url.pathname==='/api/admin/logout'){auth.logout(req,res);return send(res,200,{authenticated:false});}
@@ -30,7 +34,7 @@ async function api(req,res,url){
     if(req.method==='GET'&&url.pathname==='/api/admin/calendar'){const from=url.searchParams.get('from');const to=url.searchParams.get('to');return send(res,200,{bookings:listBookingsRange(db,from,to),blocks:listBlockedPeriods(db,from,to)});}
     if(req.method==='POST'&&url.pathname==='/api/admin/bookings')return send(res,201,{booking:createManualBooking(db,await readJson(req))});
     if(req.method==='PATCH'&&url.pathname.startsWith('/api/admin/bookings/'))return send(res,200,{booking:rescheduleBooking(db,url.pathname.split('/').pop(),await readJson(req))});
-    if(req.method==='POST'&&url.pathname.startsWith('/api/admin/bookings/')&&url.pathname.endsWith('/payment')){markBookingPaid(db,url.pathname.split('/')[4]);return send(res,200,{paid:true});}
+    if(req.method==='POST'&&url.pathname.startsWith('/api/admin/bookings/')&&url.pathname.endsWith('/payment')){markBookingPaid(db,url.pathname.split('/')[4]);void flushMailQueue();return send(res,200,{paid:true});}
     if(req.method==='DELETE'&&url.pathname.startsWith('/api/admin/bookings/')){cancelBooking(db,url.pathname.split('/').pop());return send(res,200,{cancelled:true});}
     if(req.method==='POST'&&url.pathname==='/api/admin/blocks')return send(res,201,{block:createBlockedPeriod(db,await readJson(req))});
     if(req.method==='DELETE'&&url.pathname.startsWith('/api/admin/blocks/')){deleteBlockedPeriod(db,url.pathname.split('/').pop());return send(res,200,{deleted:true});}
@@ -48,6 +52,12 @@ function staticFile(res,pathname){const dist=join(root,'dist');let file=join(dis
 
 export function startServer({port=Number(process.env.PORT||8787),host=process.env.HOST||'0.0.0.0',serveFrontend=process.env.SERVE_FRONTEND==='true'}={}){
   const server=createServer(async(req,res)=>{const url=new URL(req.url,`http://${req.headers.host||`${host}:${port}`}`);if(url.pathname.startsWith('/api/'))return api(req,res,url);if(serveFrontend)return staticFile(res,url.pathname);return send(res,404,{error:'Frontend läuft über Vite.'});});
-  return new Promise((resolveServer)=>server.listen(port,host,()=>resolveServer(server)));
+  return new Promise((resolveServer)=>server.listen(port,host,()=>{
+    void flushMailQueue();
+    const intervalMs=Number(process.env.MAIL_POLL_SECONDS||30)*1000;
+    const timerId=setInterval(()=>void flushMailQueue(),intervalMs);
+    server.on('close',()=>clearInterval(timerId));
+    resolveServer(server);
+  }));
 }
 if(process.argv[1]===fileURLToPath(import.meta.url))startServer().then(()=>console.log(`Zahrashairgloss API läuft auf Port ${process.env.PORT||8787}`));
