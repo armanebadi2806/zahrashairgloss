@@ -111,6 +111,11 @@ const normalizeNotification = (item) => {
   };
 };
 const openPayPalSendMoney = () => window.open('https://www.paypal.com/us/digital-wallet/send-receive-money/send-money','_blank','noopener,noreferrer');
+const normalizeDateValue = (value) => {
+  if (typeof value !== 'string') return '';
+  const match = value.match(/^\d{4}-\d{2}-\d{2}/);
+  return match ? match[0] : value;
+};
 const setBookingPaidViaRest = async (id) => {
   const now = new Date().toISOString();
   await supabaseRequest(`/rest/v1/bookings?id=eq.${id}`, {
@@ -129,7 +134,7 @@ const supabaseApi = async (path, options={}) => {
     const rows=await supabaseRequest('/rest/v1/services?select=id,name,short_name,duration_minutes&active=eq.true&order=duration_minutes.desc');
     return {services:rows.map((row)=>({id:row.id,name:row.name,short:row.short_name,duration:row.duration_minutes}))};
   }
-  if(path.startsWith('/api/dates')){const p=new URLSearchParams(path.split('?')[1]);const rows=await rpc('get_bookable_dates',{p_service_id:p.get('serviceId')});return {dates:rows.map((row)=>row.date)};}
+  if(path.startsWith('/api/dates')){const p=new URLSearchParams(path.split('?')[1]);const rows=await rpc('get_bookable_dates',{p_service_id:p.get('serviceId')});return {dates:rows.map((row)=>normalizeDateValue(row.date))};}
   if(path.startsWith('/api/availability')){const p=new URLSearchParams(path.split('?')[1]);const rows=await rpc('get_available_slots',{p_service_id:p.get('serviceId'),p_date:p.get('date')});return {slots:rows.map((row)=>row.slot_time)};}
   if(path==='/api/holds'&&method==='POST')return {hold:await rpc('create_hold',{p_service_id:payload.serviceId,p_date:payload.date,p_time:payload.time})};
   if(path.startsWith('/api/holds/')&&method==='DELETE'){await rpc('release_hold',{p_hold_id:path.split('/').pop()});return {released:true};}
@@ -204,9 +209,10 @@ function durationLabel(minutes) {
 }
 
 function dateView(value) {
-  const date = new Date(`${value}T12:00:00`);
+  const normalizedValue = normalizeDateValue(value);
+  const date = new Date(`${normalizedValue}T12:00:00`);
   return {
-    value,
+    value: normalizedValue,
     day: new Intl.DateTimeFormat('de-DE', { weekday: 'short' }).format(date).replace('.', ''),
     date: new Intl.DateTimeFormat('de-DE', { day: '2-digit' }).format(date),
     month: new Intl.DateTimeFormat('de-DE', { month: 'short' }).format(date).replace('.', ''),
@@ -214,7 +220,7 @@ function dateView(value) {
   };
 }
 
-const isSunday = (value) => new Date(`${value}T12:00:00`).getDay() === 0;
+const isSunday = (value) => new Date(`${normalizeDateValue(value)}T12:00:00`).getDay() === 0;
 
 function Summary({ service, date, slot, onEdit }) {
   return <aside className="booking-summary">
