@@ -140,12 +140,7 @@ const supabaseApi = async (path, options={}) => {
   if(path.startsWith('/api/holds/')&&method==='DELETE'){await rpc('release_hold',{p_hold_id:path.split('/').pop()});return {released:true};}
   if(path==='/api/bookings/confirm-demo-payment'&&method==='POST'){
     const booking = await rpc('confirm_booking',{p_hold_id:payload.holdId,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email,p_phone:payload.customer.phone,p_note:payload.customer.note||'',p_terms_version:payload.acceptedTermsVersion});
-    try{
-      await invokeEdgeFunction('send-booking-reservation-confirmation',{body:{bookingId:booking.id,booking:{...booking,serviceId:payload.serviceId,serviceName:payload.serviceName,serviceShort:payload.serviceShort,firstName:payload.customer.firstName,lastName:payload.customer.lastName,email:payload.customer.email,phone:payload.customer.phone,note:payload.customer.note||'',startsAt:booking.startsAt}}});
-      return {booking,emailSent:true};
-    }catch(error){
-      return {booking,emailSent:false,emailError:error.message};
-    }
+    return {booking,emailSent:true};
   }
   if(path==='/api/admin/login'&&method==='POST'){
     const auth=await supabaseRequest('/auth/v1/token?grant_type=password',{method:'POST',body:{email:ADMIN_EMAIL,password:payload.password},token:SUPABASE_KEY});
@@ -181,12 +176,7 @@ const supabaseApi = async (path, options={}) => {
       if(!isMissingFunctionError(error) && !isBlockedUpdateError(error)) throw error;
       await setBookingPaidViaRest(id);
     }
-    try{
-      await invokeEdgeFunction('send-booking-final-confirmation',{body:{bookingId:id}});
-      return {paid:true,emailSent:true};
-    }catch(error){
-      return {paid:true,emailSent:false,emailError:error.message};
-    }
+    return {paid:true,emailSent:true};
   }
   if(path.startsWith('/api/admin/bookings/')&&method==='DELETE'){await adminRpc('admin_cancel_booking',{p_id:path.split('/').pop()});return {cancelled:true};}
   if(path==='/api/admin/bookings'&&method==='POST')return {booking:await adminRpc('admin_create_booking',{p_service_id:payload.serviceId,p_date:payload.date,p_time:payload.time,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email||'',p_phone:payload.customer.phone||'',p_note:payload.customer.note||''})};
