@@ -29,7 +29,7 @@ begin
     from generate_series(current_date,current_date+interval '90 days',interval '1 day') g(d)
     where exists(select 1 from public.get_available_slots(p_service_id,d::date))
     order by d
-    limit 10;
+    limit 12;
 end $$;
 
 create or replace function public.admin_mark_booking_paid(p_id uuid)
