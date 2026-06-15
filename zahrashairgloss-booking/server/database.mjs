@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 const SERVICES = [
   ['balayage', 'Balayage inkl. Pflege, Schnitt und Styling', 'Balayage Komplett', 240],
+  ['consultation', 'Probe/Beratung', 'Probe/Beratung', 30],
   ['cut', 'Schneiden', 'Schneiden', 60],
   ['gloss', 'Glossing', 'Glossing', 60],
   ['gloss-cut', 'Glossing & Schnitt', 'Glossing & Schnitt', 60],

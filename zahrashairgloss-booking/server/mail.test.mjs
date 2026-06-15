@@ -26,10 +26,10 @@ test('queued customer messages are flushed and marked as sent', async () => {
   };
 
   const result = await flushQueuedCustomerMessages(db, transport, now);
-  assert.equal(result.sent, 3);
+  assert.equal(result.sent, 4);
   assert.equal(result.failed, 0);
-  assert.equal(sent.length, 3);
-  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM customer_messages WHERE sent_at IS NOT NULL').get().count, 3);
+  assert.equal(sent.length, 4);
+  assert.equal(db.prepare('SELECT COUNT(*) AS count FROM customer_messages WHERE sent_at IS NOT NULL').get().count, 4);
 });
 
 test('resend transport posts the expected payload', async () => {

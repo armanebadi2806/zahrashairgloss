@@ -4,6 +4,7 @@ import { cleanupExpiredHolds, cleanupExpiredPendingBookings } from './database.m
 const BERLIN_OFFSET = '+02:00';
 export const TERMS_VERSION = 'deposit-2026-06-10-v1';
 export const HOLD_MINUTES = 10;
+const ADMIN_NOTIFICATION_EMAIL = 'zahrashairgloas@gmail.com';
 
 const pad = (value) => String(value).padStart(2, '0');
 const minutesOf = (time) => { const [h, m] = time.split(':').map(Number); return h * 60 + m; };
@@ -65,7 +66,7 @@ function processReminderQueue(db, now = new Date()) {
       channel: booking.reminderChannel || 'email',
       recipient: booking.reminderChannel === 'sms' ? booking.phone : booking.email,
       subject: 'Terminerinnerung von Zahrashairgloss',
-      body: `${booking.firstName} ${booking.lastName}: Dein Termin bei Zahrashairgloss ist am ${booking.startsAt.slice(0, 10)} um ${booking.startsAt.slice(11, 16)} Uhr. Bitte denk an die Anzahlung, falls noch offen.`,
+      body: `kurze Terminerinnerung:\n\nAdresse: Wandsbeker Marktstraße 159, 22041 Hamburg\nNimm bitte Bargeld mit🥺\n\nLg zahra💕`,
       sendAfter,
       createdAt: now.toISOString(),
     });
@@ -118,6 +119,11 @@ function configuredSlots(serviceId, weekday) {
     return saturday
       ? [{ time: '09:30', duration: 240 }, { time: '13:30', duration: 210 }]
       : [{ time: '10:00', duration: 240 }, { time: '14:00', duration: 240 }];
+  }
+  if (serviceId === 'consultation') {
+    return saturday
+      ? [{ time: '10:45', duration: 30 }, { time: '14:45', duration: 30 }]
+      : [{ time: '11:30', duration: 30 }, { time: '15:30', duration: 30 }];
   }
   if (REGULAR_SERVICE_IDS.has(serviceId)) {
     return saturday
@@ -235,7 +241,17 @@ export function confirmDemoPayment(db, { holdId, customer, acceptedTermsVersion 
       channel: 'email',
       recipient: customer.email.trim(),
       subject: 'Deine Reservierung bei Zahrashairgloss',
-      body: `${customer.firstName.trim()} ${customer.lastName.trim()}, deine Reservierung für ${hold.starts_at.slice(0, 10)} um ${hold.starts_at.slice(11, 16)} Uhr ist vorgemerkt. Die 30 € Anzahlung ist noch offen. Bitte sende sie per PayPal, damit Zahra den Termin final bestätigen kann.`,
+      body: `${customer.firstName.trim()} ${customer.lastName.trim()}, deine Reservierung für ${hold.starts_at.slice(0, 10)} um ${hold.starts_at.slice(11, 16)} Uhr ist vorgemerkt. Die 30 € Anzahlung ist noch offen. Bitte sende sie per PayPal, damit Zahra den Termin final bestätigen kann. Adresse: Wandsbeker Marktstraße 159, 22041 Hamburg.`,
+      sendAfter: now.toISOString(),
+      createdAt: now.toISOString(),
+    });
+    queueCustomerMessage(db, {
+      bookingId: booking.id,
+      kind: 'admin_new_booking',
+      channel: 'email',
+      recipient: ADMIN_NOTIFICATION_EMAIL,
+      subject: 'Neue Terminbuchung bei Zahrashairgloss',
+      body: `${customer.firstName.trim()} ${customer.lastName.trim()} hat einen neuen Termin fuer ${service?.name || 'einen Service'} am ${hold.starts_at.slice(0, 10)} um ${hold.starts_at.slice(11, 16)} Uhr gebucht. Anzahlung: 30 EUR offen.`,
       sendAfter: now.toISOString(),
       createdAt: now.toISOString(),
     });
@@ -318,8 +334,36 @@ export function createManualBooking(db,{serviceId,date,time,customer},now=new Da
 
 export function cancelBooking(db,id) {
   cleanupExpiredPendingBookings(db);
-  const result=db.prepare(`UPDATE bookings SET status='cancelled' WHERE id=? AND status='confirmed'`).run(id);
-  if(!result.changes)throw new Error('Termin wurde nicht gefunden.');
+  const booking = db.prepare(`
+    SELECT b.id, b.email, b.starts_at AS startsAt, b.first_name AS firstName, b.last_name AS lastName,
+      s.name AS serviceName
+    FROM bookings b
+    JOIN services s ON s.id=b.service_id
+    WHERE b.id=? AND b.status='confirmed'
+  `).get(id);
+  if(!booking)throw new Error('Termin wurde nicht gefunden.');
+  db.prepare(`UPDATE bookings SET status='cancelled' WHERE id=? AND status='confirmed'`).run(id);
+  adminNotification(
+    db,
+    id,
+    'booking_cancelled',
+    'Termin storniert',
+    `${booking.firstName} ${booking.lastName} wurde manuell storniert.`,
+    new Date().toISOString(),
+    { appointmentStartsAt: booking.startsAt, serviceName: booking.serviceName },
+  );
+  if (booking.email?.trim()) {
+    queueCustomerMessage(db, {
+      bookingId: id,
+      kind: 'cancellation_confirmation',
+      channel: 'email',
+      recipient: booking.email.trim(),
+      subject: 'Dein Termin wurde storniert',
+      body: `${booking.firstName} ${booking.lastName}, dein Termin für ${booking.serviceName} am ${booking.startsAt.slice(0, 10)} um ${booking.startsAt.slice(11, 16)} Uhr wurde storniert.`,
+      sendAfter: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    });
+  }
 }
 
 export function markBookingPaid(db,id,now=new Date()) {
@@ -336,7 +380,7 @@ export function markBookingPaid(db,id,now=new Date()) {
     channel: 'email',
     recipient: booking.email,
     subject: 'Dein Termin ist jetzt bestätigt',
-    body: `${booking.firstName} ${booking.lastName}, danke! Deine Anzahlung ist eingegangen. Dein Termin am ${booking.startsAt.slice(0, 10)} um ${booking.startsAt.slice(11, 16)} Uhr ist jetzt final bestätigt.`,
+    body: `${booking.firstName} ${booking.lastName}, danke! Deine Anzahlung ist eingegangen. Dein Termin am ${booking.startsAt.slice(0, 10)} um ${booking.startsAt.slice(11, 16)} Uhr ist jetzt final bestätigt. Adresse: Wandsbeker Marktstraße 159, 22041 Hamburg.`,
     sendAfter: now.toISOString(),
     createdAt: now.toISOString(),
   });

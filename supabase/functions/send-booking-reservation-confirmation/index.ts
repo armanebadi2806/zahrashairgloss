@@ -76,7 +76,8 @@ Deno.serve(async (request) => {
   const resolvedServiceName = serviceName || service?.name || serviceShort || "dein Termin";
   const text =
     `${firstName} ${lastName}, deine Reservierung für ${resolvedServiceName} am ${appointmentLabel} Uhr ist vorgemerkt. ` +
-    "Die 30 € Anzahlung ist noch offen. Bitte sende sie per PayPal, damit Zahra den Termin final bestätigen kann.";
+    "Die 30 € Anzahlung ist noch offen. Bitte sende sie per PayPal, damit Zahra den Termin final bestätigen kann. " +
+    "Adresse: Wandsbeker Marktstraße 159, 22041 Hamburg.";
 
   const resendResponse = await fetch("https://api.resend.com/emails", {
     method: "POST",
