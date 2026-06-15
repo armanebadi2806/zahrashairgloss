@@ -35,38 +35,48 @@ Deno.serve(async (request) => {
   }
 
   let bookingId = "";
+  let bookingPayload: Record<string, unknown> | null = null;
   try {
     const payload = await request.json();
     bookingId = String(payload?.bookingId || "").trim();
+    bookingPayload = typeof payload?.booking === "object" && payload.booking ? payload.booking as Record<string, unknown> : null;
   } catch {
     return json(400, { message: "Ungültige Anfrage." });
   }
 
-  if (!bookingId) return json(400, { message: "bookingId fehlt." });
-
   const adminClient = createClient(supabaseUrl, supabaseServiceRoleKey);
-  const { data: booking, error: bookingError } = await adminClient
-    .from("bookings")
-    .select("id, first_name, last_name, email, starts_at, service_id, payment_status, confirmation_status")
-    .eq("id", bookingId)
-    .single();
+  const booking = bookingPayload || (bookingId
+    ? (await adminClient
+        .from("bookings")
+        .select("id, first_name, last_name, email, starts_at, service_id, payment_status, confirmation_status")
+        .eq("id", bookingId)
+        .single()).data
+    : null);
 
-  if (bookingError || !booking) return json(404, { message: "Buchung wurde nicht gefunden." });
-  if (booking.payment_status !== "pending") {
+  if (!booking) return json(404, { message: "Buchung wurde nicht gefunden." });
+  const paymentStatus = String(booking.payment_status || booking.paymentStatus || "").toLowerCase();
+  if (paymentStatus && paymentStatus !== "pending") {
     return json(409, { message: "Die Buchung ist nicht mehr im Reservierungsstatus." });
   }
 
-  const { data: service } = await adminClient
+  const serviceName = String(booking.serviceName || booking.service_name || "");
+  const serviceShort = String(booking.serviceShort || booking.service_short || "");
+  const firstName = String(booking.firstName || booking.first_name || "");
+  const lastName = String(booking.lastName || booking.last_name || "");
+  const email = String(booking.email || "");
+  const startsAt = String(booking.startsAt || booking.starts_at || "");
+  const serviceId = String(booking.serviceId || booking.service_id || "");
+  const { data: service } = serviceName || !serviceId ? { data: null } : await adminClient
     .from("services")
-    .select("name")
-    .eq("id", booking.service_id)
+    .select("name, short_name")
+    .eq("id", serviceId)
     .single();
 
-  const appointmentLabel = formatAppointment(booking.starts_at);
-  const serviceName = service?.name || "dein Termin";
+  const appointmentLabel = formatAppointment(startsAt);
+  const resolvedServiceName = serviceName || service?.name || serviceShort || "dein Termin";
   const text =
-    `${booking.first_name} ${booking.last_name}, deine Reservierung für ${serviceName} am ${appointmentLabel} Uhr ist vorgemerkt. ` +
-    "Die 30 € Anzahlung ist offen und muss innerhalb von 2 Stunden eingehen, sonst wird der Termin automatisch storniert.";
+    `${firstName} ${lastName}, deine Reservierung für ${resolvedServiceName} am ${appointmentLabel} Uhr ist vorgemerkt. ` +
+    "Die 30 € Anzahlung ist noch offen. Bitte sende sie per PayPal, damit Zahra den Termin final bestätigen kann.";
 
   const resendResponse = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -76,7 +86,7 @@ Deno.serve(async (request) => {
     },
     body: JSON.stringify({
       from: mailFrom,
-      to: booking.email,
+      to: email,
       subject: "Deine Reservierung bei Zahrashairgloss",
       text,
     }),

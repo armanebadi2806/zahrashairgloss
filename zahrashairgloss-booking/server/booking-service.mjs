@@ -235,7 +235,7 @@ export function confirmDemoPayment(db, { holdId, customer, acceptedTermsVersion 
       channel: 'email',
       recipient: customer.email.trim(),
       subject: 'Deine Reservierung bei Zahrashairgloss',
-      body: `${customer.firstName.trim()} ${customer.lastName.trim()}, deine Reservierung für ${hold.starts_at.slice(0, 10)} um ${hold.starts_at.slice(11, 16)} Uhr ist vorgemerkt. Die 30 € Anzahlung ist offen und muss innerhalb von 2 Stunden eingehen, sonst wird der Termin automatisch storniert.`,
+      body: `${customer.firstName.trim()} ${customer.lastName.trim()}, deine Reservierung für ${hold.starts_at.slice(0, 10)} um ${hold.starts_at.slice(11, 16)} Uhr ist vorgemerkt. Die 30 € Anzahlung ist noch offen. Bitte sende sie per PayPal, damit Zahra den Termin final bestätigen kann.`,
       sendAfter: now.toISOString(),
       createdAt: now.toISOString(),
     });
