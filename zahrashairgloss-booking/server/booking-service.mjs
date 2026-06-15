@@ -131,7 +131,7 @@ export function listServices(db) {
   return db.prepare(`SELECT id,name,short_name AS short,duration_minutes AS duration FROM services WHERE active=1 ORDER BY rowid`).all();
 }
 
-export function listBookableDates(db, { serviceId, from = new Date(), limit = 6, searchDays = 90 } = {}) {
+export function listBookableDates(db, { serviceId, from = new Date(), limit = 10, searchDays = 90 } = {}) {
   if (!serviceId) throw new Error('Bitte zuerst einen Service wählen.');
   cleanupExpiredPendingBookings(db, from);
   touchSchedulers(db, from);

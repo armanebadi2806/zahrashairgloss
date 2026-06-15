@@ -7,6 +7,14 @@ const SUPABASE_KEY = 'sb_publishable_UUac6eNn00yh7ZM5UsLZGw_U2BjRP4c';
 const ADMIN_EMAIL = 'dxpvtm8nx9@privaterelay.appleid.com';
 const PAYPAL_EMAIL = 'zahrashairgloas@gmail.com';
 const asset = (path) => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`;
+const SERVICE_COLOR_PALETTE = ['#b8acc7', '#8e9b92', '#d88952', '#d46d88', '#6d8db3', '#9d7a5c', '#7e6aa8', '#4f8a7b'];
+const DEFAULT_SERVICE_COLORS = {
+  balayage: '#8e9b92',
+  cut: '#b8acc7',
+  gloss: '#d88952',
+  'gloss-cut': '#d46d88',
+  colour: '#6d8db3',
+};
 
 const sessionToken = () => window.localStorage.getItem('zahra_admin_token') || '';
 const seenBookingAlertsKey = 'zahra_seen_booking_alerts';
@@ -15,33 +23,23 @@ const readSeenBookingAlerts = () => {
   catch { return new Set(); }
 };
 const rememberBookingAlert = (ids) => window.localStorage.setItem(seenBookingAlertsKey, JSON.stringify([...ids].slice(-100)));
-const bookingOverridesKey = 'zahra_booking_overrides';
-const readBookingOverrides = () => {
-  try { return JSON.parse(window.localStorage.getItem(bookingOverridesKey) || '{}'); }
-  catch { return {}; }
+const serviceColorsKey = 'zahra_service_colors';
+const readServiceColors = () => {
+  try { return { ...DEFAULT_SERVICE_COLORS, ...JSON.parse(window.localStorage.getItem(serviceColorsKey) || '{}') }; }
+  catch { return { ...DEFAULT_SERVICE_COLORS }; }
 };
-const writeBookingOverrides = (overrides) => window.localStorage.setItem(bookingOverridesKey, JSON.stringify(overrides));
-const markBookingConfirmedLocally = (id) => {
-  const overrides = readBookingOverrides();
-  overrides[id] = { paymentStatus: 'paid', confirmationStatus: 'confirmed' };
-  writeBookingOverrides(overrides);
-};
-const clearBookingOverride = (id) => {
-  const overrides = readBookingOverrides();
-  if (!overrides[id]) return;
-  delete overrides[id];
-  writeBookingOverrides(overrides);
-};
+const writeServiceColors = (colors) => window.localStorage.setItem(serviceColorsKey, JSON.stringify(colors));
 const isMissingFunctionError = (error) => /Could not find the function public\.admin_mark_booking_paid|schema cache/i.test(error?.message || '');
 const isBlockedUpdateError = (error) => /permission denied for table bookings/i.test(error?.message || '');
 const isMissingBlockRangeFunctionError = (error) => /public\.admin_create_blocks|schema cache|operator does not exist: timestamp with time zone \+ integer/i.test(error?.message || '');
-const supabaseRequest = async (pathname, { method='GET', body, token='' }={}) => {
+const supabaseRequest = async (pathname, { method='GET', body, token='', headers: extraHeaders = {} }={}) => {
   const response = await fetch(`${SUPABASE_URL}${pathname}`, {
     method,
     headers: {
       apikey: SUPABASE_KEY,
       Authorization: `Bearer ${token || SUPABASE_KEY}`,
       'Content-Type': 'application/json',
+      ...extraHeaders,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -76,16 +74,12 @@ const berlinIso = (value) => {
 };
 const readField = (item, snakeKey, camelKey = snakeKey.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())) => item?.[snakeKey] ?? item?.[camelKey];
 const normalizeBooking = (item) => {
-  const override = readBookingOverrides()[item.id];
   const paymentValue = readField(item, 'payment_status', 'paymentStatus');
   const confirmationValue = readField(item, 'confirmation_status', 'confirmationStatus');
-  const paymentStatus = paymentValue === 'paid' || paymentValue === 'manual'
-    ? paymentValue
-    : (override?.paymentStatus || paymentValue);
+  const paymentStatus = paymentValue;
   const confirmationStatus = confirmationValue === 'confirmed'
     ? confirmationValue
-    : (override?.confirmationStatus || confirmationValue || (paymentStatus==='paid'||paymentStatus==='manual'?'confirmed':'awaiting_payment'));
-  if ((paymentStatus === 'paid' || paymentStatus === 'manual') && confirmationStatus === 'confirmed') clearBookingOverride(item.id);
+    : (confirmationValue || (paymentStatus==='paid'||paymentStatus==='manual'?'confirmed':'awaiting_payment'));
   return {
     ...item,
     serviceId: readField(item, 'service_id', 'serviceId'),
@@ -117,6 +111,15 @@ const normalizeNotification = (item) => {
   };
 };
 const openPayPalSendMoney = () => window.open('https://www.paypal.com/us/digital-wallet/send-receive-money/send-money','_blank','noopener,noreferrer');
+const setBookingPaidViaRest = async (id) => {
+  const now = new Date().toISOString();
+  await supabaseRequest(`/rest/v1/bookings?id=eq.${id}`, {
+    method: 'PATCH',
+    token: sessionToken(),
+    headers: { Prefer: 'return=minimal' },
+    body: { payment_status: 'paid', confirmation_status: 'confirmed', confirmed_at: now },
+  });
+};
 
 const supabaseApi = async (path, options={}) => {
   const method=options.method||'GET';
@@ -169,17 +172,16 @@ const supabaseApi = async (path, options={}) => {
     const id=path.split('/')[4];
     try{
       await adminRpc('admin_mark_booking_paid',{p_id:id});
-      try{
-        await invokeEdgeFunction('send-booking-final-confirmation',{body:{bookingId:id}});
-        return {paid:true,emailSent:true};
-      }catch(error){
-        return {paid:true,emailSent:false,emailError:error.message};
-      }
     }catch(error){
       if(!isMissingFunctionError(error) && !isBlockedUpdateError(error)) throw error;
-      markBookingConfirmedLocally(id);
+      await setBookingPaidViaRest(id);
     }
-    return {paid:true};
+    try{
+      await invokeEdgeFunction('send-booking-final-confirmation',{body:{bookingId:id}});
+      return {paid:true,emailSent:true};
+    }catch(error){
+      return {paid:true,emailSent:false,emailError:error.message};
+    }
   }
   if(path.startsWith('/api/admin/bookings/')&&method==='DELETE'){await adminRpc('admin_cancel_booking',{p_id:path.split('/').pop()});return {cancelled:true};}
   if(path==='/api/admin/bookings'&&method==='POST')return {booking:await adminRpc('admin_create_booking',{p_service_id:payload.serviceId,p_date:payload.date,p_time:payload.time,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email||'',p_phone:payload.customer.phone||'',p_note:payload.customer.note||''})};
@@ -348,6 +350,7 @@ function ProtectedAdmin({ onExit }) {
 
 function Admin({ onExit, onLoggedOut }) {
   const [services,setServices]=useState([]);
+  const [serviceColors,setServiceColors]=useState(readServiceColors);
   const [monthStart,setMonthStart]=useState(startMonth(new Date()));
   const [selectedDate,setSelectedDate]=useState(isoDate(new Date()));
   const [bookings,setBookings]=useState([]);
@@ -406,6 +409,7 @@ function Admin({ onExit, onLoggedOut }) {
   const moveDateView=move.date ? dateView(move.date) : null;
   const moveDateIsSunday = move.date ? isSunday(move.date) : false;
   const selectedManualService=services.find((item)=>item.id===manual.serviceId);
+  const colorForService=(serviceId)=>serviceColors[serviceId]||DEFAULT_SERVICE_COLORS[serviceId]||'#b8acc7';
   const changeMonth=(months)=>{const next=addMonths(monthStart,months);setMonthStart(next);setSelectedDate(isoDate(next));};
   const flash=(message)=>{setNotice(message);window.setTimeout(()=>setNotice(''),2600);};
   const saveManual=async(event)=>{event.preventDefault();try{await api('/api/admin/bookings',{method:'POST',body:JSON.stringify({serviceId:manual.serviceId,date:manual.date,time:manual.time,customer:{firstName:manual.firstName,lastName:manual.lastName,email:manual.email,phone:manual.phone,note:manual.note}})});setSheet(null);setSelectedDate(manual.date);flash('Termin wurde eingetragen.');await refresh();}catch(err){setError(err.message);}};
@@ -413,7 +417,8 @@ function Admin({ onExit, onLoggedOut }) {
   const removeBlock=async(id)=>{await api(`/api/admin/blocks/${id}`,{method:'DELETE'});flash('Tag ist wieder buchbar.');await refresh();};
   const cancelAppointment=async(id)=>{if(!window.confirm('Termin wirklich stornieren?'))return;await api(`/api/admin/bookings/${id}`,{method:'DELETE'});setSelectedBooking(null);setSheet(null);flash('Termin wurde storniert.');await refresh();};
   const saveMove=async(event)=>{event.preventDefault();try{await api(`/api/admin/bookings/${selectedBooking.id}`,{method:'PATCH',body:JSON.stringify(move)});setSheet(null);setSelectedDate(move.date);flash('Termin wurde verschoben.');await refresh();}catch(err){setError(err.message);}};
-  const confirmDeposit=async()=>{try{const result=await api(`/api/admin/bookings/${selectedBooking.id}/payment`,{method:'POST',body:JSON.stringify({booking:{id:selectedBooking.id,serviceId:selectedBooking.serviceId,serviceName:selectedBooking.serviceName,serviceShort:selectedBooking.serviceShort,startsAt:selectedBooking.startsAt,firstName:selectedBooking.firstName,lastName:selectedBooking.lastName,email:selectedBooking.email,phone:selectedBooking.phone,note:selectedBooking.note,paymentStatus:'paid',confirmationStatus:'confirmed'}})});markBookingConfirmedLocally(selectedBooking.id);setSelectedBooking((current)=>current?{...current,paymentStatus:'paid',confirmationStatus:'confirmed'}:current);flash(result?.emailSent===false?'Anzahlung bestätigt, aber die Bestätigungsmail konnte nicht gesendet werden.':'Anzahlung bestätigt. Finale Bestätigung ist vorbereitet.');await refresh();}catch(err){setError(err.message);}};
+  const confirmDeposit=async()=>{try{const result=await api(`/api/admin/bookings/${selectedBooking.id}/payment`,{method:'POST',body:JSON.stringify({booking:{id:selectedBooking.id,serviceId:selectedBooking.serviceId,serviceName:selectedBooking.serviceName,serviceShort:selectedBooking.serviceShort,startsAt:selectedBooking.startsAt,firstName:selectedBooking.firstName,lastName:selectedBooking.lastName,email:selectedBooking.email,phone:selectedBooking.phone,note:selectedBooking.note,paymentStatus:'paid',confirmationStatus:'confirmed'}})});setSelectedBooking((current)=>current?{...current,paymentStatus:'paid',confirmationStatus:'confirmed'}:current);flash(result?.emailSent===false?'Anzahlung bestätigt, aber die Bestätigungsmail konnte nicht gesendet werden.':'Anzahlung bestätigt. Finale Bestätigung ist vorbereitet.');await refresh();}catch(err){setError(err.message);}};
+  const updateServiceColor=(serviceId,color)=>setServiceColors((current)=>{const next={...current,[serviceId]:color};writeServiceColors(next);return next;});
   const openNotifications=async()=>{setBookingAlert(null);setSheet('notifications');if(unread){await api('/api/admin/notifications/read',{method:'POST',body:'{}'});setNotifications((items)=>items.map((item)=>({...item,readAt:item.readAt||new Date().toISOString()})));}};
   const openBookingMatch=(booking)=>{const bookingDate=new Date(`${booking.startsAt.slice(0,10)}T12:00:00`);setBookingSearch(`${booking.firstName} ${booking.lastName}`);setMonthStart(startMonth(bookingDate));setSelectedDate(booking.startsAt.slice(0,10));setSelectedBooking(booking);setSheet('details');};
   const logout=async()=>{await api('/api/admin/logout',{method:'POST',body:'{}'});onLoggedOut();};
@@ -429,9 +434,10 @@ function Admin({ onExit, onLoggedOut }) {
       <div className="month-card"><div className="month-toolbar"><button onClick={()=>changeMonth(-1)} aria-label="Vorheriger Monat"><CaretLeft size={19}/></button><strong>{new Intl.DateTimeFormat('de-DE',{month:'long',year:'numeric'}).format(monthStart)}</strong><button onClick={()=>changeMonth(1)} aria-label="Nächster Monat"><CaretRight size={19}/></button></div><div className="month-weekdays">{['Mo','Di','Mi','Do','Fr','Sa','So'].map((day)=><span key={day}>{day}</span>)}</div><div className="month-grid">{monthDays.map((day)=>{const value=isoDate(day);const count=bookings.filter((item)=>item.startsAt.slice(0,10)===value).length;const blocked=blocks.some((item)=>item.startsAt.slice(0,10)===value)||isSunday(value);const outside=day.getMonth()!==monthStart.getMonth();const today=value===isoDate(new Date());return <button key={value} className={`${selectedDate===value?'selected':''} ${blocked?'blocked':''} ${outside?'outside':''} ${today?'today':''}`} onClick={()=>{if(outside)setMonthStart(startMonth(day));setSelectedDate(value);}}><strong>{day.getDate()}</strong>{blocked?<i className="off-dot"/>:count>0?<i className="count-dot">{count}</i>:<i/>}</button>;})}</div></div>
 
       <div className="day-heading"><div><span>{selectedView.full}</span><h2>{selectedDateIsSunday?'Sonntag ist frei':dayBlock?'Freier Tag':'Tagesplan'}</h2></div>{selectedDateIsSunday?null:dayBlock?<button className="text-action danger" onClick={()=>removeBlock(dayBlock.id)}>Wieder öffnen</button>:<button className="text-action" onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}>+ Termin</button>}</div>
-      {selectedDateIsSunday?<div className="day-off-card"><span><CalendarBlank size={22}/></span><div><strong>Sonntag</strong><p>Sonntags bleibt Zahrashairgloss immer geschlossen und ist nicht buchbar.</p></div></div>:dayBlock?<div className="day-off-card"><span><CalendarBlank size={22}/></span><div><strong>{dayBlock.reason}</strong><p>An diesem Tag werden keine Online-Termine angeboten.</p></div></div>:<div className="admin-agenda">{dayBookings.length?dayBookings.map((item)=><button className={`agenda-item ${hasOpenDeposit(item)?'pending-payment':''}`} key={item.id} onClick={()=>{setSelectedBooking(item);setSheet('details');}}><time>{item.startsAt.slice(11,16)}</time><span className={`agenda-line ${item.serviceId==='balayage'?'long':''} ${hasOpenDeposit(item)?'pending-payment':''}`}/><div><strong>{item.firstName} {item.lastName}</strong><p>{item.serviceShort} · {durationLabel(item.duration)}</p></div><span className={`booking-source ${item.paymentStatus==='manual'?'manual':hasOpenDeposit(item)?'pending':'online'}`}>{item.paymentStatus==='manual'?'Manuell':hasOpenDeposit(item)?'30 € offen':'Online'}</span><CaretRight size={17}/></button>):<div className="empty-day"><Clock size={25}/><strong>Noch keine Termine</strong><p>Nutze „Termin“, um diesen Tag manuell zu belegen.</p></div>}</div>}
+      {selectedDateIsSunday?<div className="day-off-card"><span><CalendarBlank size={22}/></span><div><strong>Sonntag</strong><p>Sonntags bleibt Zahrashairgloss immer geschlossen und ist nicht buchbar.</p></div></div>:dayBlock?<div className="day-off-card"><span><CalendarBlank size={22}/></span><div><strong>{dayBlock.reason}</strong><p>An diesem Tag werden keine Online-Termine angeboten.</p></div></div>:<div className="admin-agenda">{dayBookings.length?dayBookings.map((item)=><button className={`agenda-item ${hasOpenDeposit(item)?'pending-payment':''}`} key={item.id} onClick={()=>{setSelectedBooking(item);setSheet('details');}}><time>{item.startsAt.slice(11,16)}</time><span className={`agenda-line ${item.serviceId==='balayage'?'long':''} ${hasOpenDeposit(item)?'pending-payment':''}`} style={{background:hasOpenDeposit(item)?undefined:colorForService(item.serviceId)}}/><div><strong>{item.firstName} {item.lastName}</strong><p>{item.serviceShort} · {durationLabel(item.duration)}</p></div><span className={`booking-source ${item.paymentStatus==='manual'?'manual':hasOpenDeposit(item)?'pending':'online'}`}>{item.paymentStatus==='manual'?'Manuell':hasOpenDeposit(item)?'30 € offen':'Online'}</span><CaretRight size={17}/></button>):<div className="empty-day"><Clock size={25}/><strong>Noch keine Termine</strong><p>Nutze „Termin“, um diesen Tag manuell zu belegen.</p></div>}</div>}
 
       <section className="quick-overview"><h3>Dieser Monat</h3><div><span><strong>{bookings.filter((item)=>item.startsAt.slice(0,7)===isoDate(monthStart).slice(0,7)).length}</strong> Termine</span><span><strong>{bookings.filter((item)=>item.startsAt.slice(0,7)===isoDate(monthStart).slice(0,7)&&item.paymentStatus==='paid').length*30} €</strong> erhalten</span><span><strong>{blocks.filter((item)=>item.startsAt.slice(0,7)===isoDate(monthStart).slice(0,7)).length}</strong> freie Tage</span></div></section>
+      <section className="service-color-card"><h3>Service-Farben</h3><div className="service-color-list">{services.map((item)=><div key={item.id} className="service-color-row"><div className="service-color-info"><span className="service-color-dot" style={{background:colorForService(item.id)}}/><strong>{item.short}</strong></div><div className="service-color-palette">{SERVICE_COLOR_PALETTE.map((color)=><button key={color} type="button" className={colorForService(item.id)===color?'selected':''} style={{background:color}} onClick={()=>updateServiceColor(item.id,color)} aria-label={`${item.short} Farbe ${color}`}/> )}</div></div>)}</div></section>
     </section>
 
     <nav className="admin-bottom-actions">{!selectedDateIsSunday&&<button onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}><Plus size={21}/><span>Termin</span></button>}<button onClick={()=>{setFreeDay({fromDate:selectedDate,toDate:selectedDate,reason:'Frei'});setSheet('free-day');}}><CalendarBlank size={21}/><span>Freier Tag</span></button></nav>
