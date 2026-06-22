@@ -449,6 +449,10 @@ function BookingApp({ onAdmin }) {
         <button className="new-booking-link" onClick={()=>window.location.reload()}>Weitere Buchung beginnen</button>
       </div>}
     </section>
+    <footer className="mobile-site-footer">
+      <p>Made by Arman Ebadi</p>
+      <a href="https://www.arman-ebadi.de" target="_blank" rel="noreferrer">www.arman-ebadi.de</a>
+    </footer>
   </main>;
 }
 
