@@ -9,6 +9,11 @@ const PAYPAL_EMAIL = 'zahrashairgloas@gmail.com';
 const ADMIN_ONLY_SERVICES = [{ id: 'consultation', name: 'Probe/Beratung', short: 'Probe/Beratung', duration: 30 }];
 const asset = (path) => `${import.meta.env.BASE_URL}${path.replace(/^\//, '')}`;
 const SERVICE_COLOR_PALETTE = ['#b8acc7', '#8e9b92', '#d88952', '#d46d88', '#6d8db3', '#9d7a5c', '#7e6aa8', '#4f8a7b'];
+const WAITLIST_TIME_WINDOWS = [
+  { value: 'egal', label: 'Egal' },
+  { value: 'vormittag', label: 'Vormittag' },
+  { value: 'nachmittag', label: 'Nachmittag' },
+];
 const DEFAULT_SERVICE_COLORS = {
   balayage: '#8e9b92',
   consultation: '#9d7a5c',
@@ -118,6 +123,40 @@ const normalizeNotification = (item) => {
     serviceName: readField(item, 'service_name', 'serviceName'),
   };
 };
+const normalizeWaitlistEntry = (item) => ({
+  ...item,
+  serviceId: readField(item, 'service_id', 'serviceId'),
+  serviceName: readField(item, 'service_name', 'serviceName'),
+  serviceShort: readField(item, 'service_short', 'serviceShort'),
+  preferredDate: normalizeDateValue(readField(item, 'preferred_date', 'preferredDate') || ''),
+  timeWindow: readField(item, 'time_window', 'timeWindow') || 'egal',
+  firstName: readField(item, 'first_name', 'firstName'),
+  lastName: readField(item, 'last_name', 'lastName'),
+  notifiedAt: readField(item, 'notified_at', 'notifiedAt'),
+  createdAt: readField(item, 'created_at', 'createdAt'),
+  updatedAt: readField(item, 'updated_at', 'updatedAt'),
+});
+const waitlistWindowLabel = (value) => WAITLIST_TIME_WINDOWS.find((item) => item.value === value)?.label || 'Egal';
+const normalizeCustomerProfileContext = (data) => ({
+  profile: data?.profile ? {
+    ...data.profile,
+    firstName: readField(data.profile, 'first_name', 'firstName'),
+    lastName: readField(data.profile, 'last_name', 'lastName'),
+    adminNote: readField(data.profile, 'admin_note', 'adminNote') || '',
+    preferences: data.profile.preferences || '',
+    createdAt: readField(data.profile, 'created_at', 'createdAt'),
+    updatedAt: readField(data.profile, 'updated_at', 'updatedAt'),
+  } : null,
+  history: Array.isArray(data?.history) ? data.history.map((item) => ({
+    ...item,
+    startsAt: berlinIso(readField(item, 'starts_at', 'startsAt')),
+    paymentStatus: readField(item, 'payment_status', 'paymentStatus'),
+    serviceName: readField(item, 'service_name', 'serviceName'),
+    serviceShort: readField(item, 'service_short', 'serviceShort'),
+  })) : [],
+  waitlistEntries: Array.isArray(data?.waitlistEntries) ? data.waitlistEntries.map(normalizeWaitlistEntry) : [],
+  stats: data?.stats || { totalBookings: 0, cancellations: 0 },
+});
 const openPayPalSendMoney = () => window.open('https://www.paypal.com/us/digital-wallet/send-receive-money/send-money','_blank','noopener,noreferrer');
 const normalizeDateValue = (value) => {
   if (typeof value !== 'string') return '';
@@ -150,6 +189,19 @@ const supabaseApi = async (path, options={}) => {
     const booking = await rpc('confirm_booking',{p_hold_id:payload.holdId,p_first_name:payload.customer.firstName,p_last_name:payload.customer.lastName,p_email:payload.customer.email,p_phone:payload.customer.phone,p_note:payload.customer.note||'',p_terms_version:payload.acceptedTermsVersion});
     return {booking,emailSent:true};
   }
+  if(path==='/api/waitlist'&&method==='POST'){
+    const entryId = await rpc('create_waitlist_entry',{
+      p_service_id: payload.serviceId,
+      p_preferred_date: payload.preferredDate || null,
+      p_time_window: payload.timeWindow || 'egal',
+      p_first_name: payload.firstName,
+      p_last_name: payload.lastName,
+      p_email: payload.email,
+      p_phone: payload.phone,
+      p_note: payload.note || '',
+    });
+    return { entry: { id: entryId } };
+  }
   if(path==='/api/admin/login'&&method==='POST'){
     const auth=await supabaseRequest('/auth/v1/token?grant_type=password',{method:'POST',body:{email:ADMIN_EMAIL,password:payload.password},token:SUPABASE_KEY});
     window.localStorage.setItem('zahra_admin_token',auth.access_token);return {authenticated:true};
@@ -162,6 +214,21 @@ const supabaseApi = async (path, options={}) => {
   if(path.startsWith('/api/admin/calendar')){const p=new URLSearchParams(path.split('?')[1]);const [bookings,blocks]=await Promise.all([adminRpc('admin_calendar',{p_from:p.get('from'),p_to:p.get('to')}),adminRpc('admin_blocks',{p_from:p.get('from'),p_to:p.get('to')})]);return {bookings:bookings.map(normalizeBooking),blocks:blocks.map(normalizeBlock)};}
   if(path==='/api/admin/notifications')return {notifications:(await adminRpc('admin_notifications')).map(normalizeNotification)};
   if(path==='/api/admin/notifications/read'&&method==='POST'){await adminRpc('admin_mark_notifications_read');return {read:true};}
+  if(path==='/api/admin/waitlist')return {entries:(await adminRpc('admin_waitlist_entries')).map(normalizeWaitlistEntry)};
+  if(path.startsWith('/api/admin/waitlist/')&&method==='PATCH'){
+    const id = path.split('/').pop();
+    await adminRpc('admin_update_waitlist_status',{p_id:id,p_status:payload.status});
+    return {entry:{id,status:payload.status}};
+  }
+  if(path.startsWith('/api/admin/customer-profile/')&&method==='GET'){
+    const id = path.split('/').pop();
+    return normalizeCustomerProfileContext(await adminRpc('admin_customer_profile_context',{p_booking_id:id}));
+  }
+  if(path.startsWith('/api/admin/customer-profile/')&&method==='POST'){
+    const id = path.split('/').pop();
+    await adminRpc('admin_save_customer_profile',{p_booking_id:id,p_admin_note:payload.adminNote||'',p_preferences:payload.preferences||''});
+    return {saved:true};
+  }
   if(path==='/api/admin/blocks'&&method==='POST'){
     const fromDate = payload.fromDate || payload.date;
     const toDate = payload.toDate || payload.date || payload.fromDate;
@@ -255,6 +322,10 @@ function BookingApp({ onAdmin }) {
   const [paypalEmailCopied,setPaypalEmailCopied]=useState(false);
   const [reservationEmailWarning,setReservationEmailWarning]=useState('');
   const [customer,setCustomer]=useState({firstName:'',lastName:'',email:'',phone:'',note:''});
+  const [waitlistOpen,setWaitlistOpen]=useState(false);
+  const [waitlistSaving,setWaitlistSaving]=useState(false);
+  const [waitlistSuccess,setWaitlistSuccess]=useState('');
+  const [waitlistForm,setWaitlistForm]=useState({firstName:'',lastName:'',email:'',phone:'',preferredDate:'',timeWindow:'egal',note:''});
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState('');
 
@@ -262,15 +333,43 @@ function BookingApp({ onAdmin }) {
   useEffect(()=>{if(!service)return;setDates([]);setDate(null);setSlot(null);setLoading(true);api(`/api/dates?serviceId=${encodeURIComponent(service.id)}`).then((data)=>setDates(data.dates.map(dateView))).catch((err)=>setError(err.message)).finally(()=>setLoading(false));},[service]);
   useEffect(()=>{if(!date||!service)return;setSlots([]);setSlot(null);setLoading(true);api(`/api/availability?serviceId=${encodeURIComponent(service.id)}&date=${date.value}`).then((data)=>setSlots(data.slots)).catch((err)=>setError(err.message)).finally(()=>setLoading(false));},[date,service]);
   useEffect(()=>{if(!hold||payment==='success')return;const update=()=>{const left=Math.max(0,Math.ceil((new Date(hold.expiresAt).getTime()-Date.now())/1000));setSeconds(left);if(left===0){setError('Die Reservierungszeit ist abgelaufen. Bitte wähle den Termin erneut.');setHold(null);setStep(2);}};update();const timer=window.setInterval(update,1000);return()=>window.clearInterval(timer);},[hold,payment]);
+  useEffect(()=>{if(date?.value){setWaitlistForm((current)=>current.preferredDate?current:{...current,preferredDate:date.value});}},[date]);
 
   const releaseHold=async()=>{if(!hold)return;try{await api(`/api/holds/${hold.id}`,{method:'DELETE'});}catch{}setHold(null);};
   const editStep=async(target)=>{if(target<3)await releaseHold();setError('');setStep(target);};
-  const chooseService=(item)=>{setService(item);setDate(null);setSlot(null);setError('');window.setTimeout(()=>setStep(2),140);};
+  const chooseService=(item)=>{setService(item);setDate(null);setSlot(null);setError('');setWaitlistOpen(false);setWaitlistSuccess('');setWaitlistForm((current)=>({...current,preferredDate:'',timeWindow:'egal'}));window.setTimeout(()=>setStep(2),140);};
   const reserveSlot=async()=>{setError('');setLoading(true);try{const data=await api('/api/holds',{method:'POST',body:JSON.stringify({serviceId:service.id,date:date.value,time:slot})});setHold(data.hold);setStep(3);}catch(err){setError(err.message);const data=await api(`/api/availability?serviceId=${service.id}&date=${date.value}`);setSlots(data.slots);setSlot(null);}finally{setLoading(false);}};
   const updateCustomer=(field)=>(event)=>setCustomer((current)=>({...current,[field]:event.target.value}));
+  const updateWaitlist=(field)=>(event)=>setWaitlistForm((current)=>({...current,[field]:event.target.value}));
   const contactValid=customer.firstName.trim()&&customer.lastName.trim()&&customer.email.includes('@')&&customer.phone.trim();
+  const waitlistValid=waitlistForm.firstName.trim()&&waitlistForm.lastName.trim()&&waitlistForm.email.includes('@')&&waitlistForm.phone.trim();
   const pay=async()=>{if(!depositTermsAccepted||!hold)return;setPayment('loading');setError('');setReservationEmailWarning('');try{const result=await api('/api/bookings/confirm-demo-payment',{method:'POST',body:JSON.stringify({holdId:hold.id,serviceId:service.id,serviceName:service.name,serviceShort:service.short,customer,acceptedTermsVersion:termsVersion})});if(result?.emailSent===false)setReservationEmailWarning('Die Reservierungs-Mail konnte gerade nicht gesendet werden. Der Termin ist trotzdem vorgemerkt.');setPayment('success');}catch(err){setPayment('idle');setError(err.message);}};
   const copyPayPalEmail=async()=>{try{await navigator.clipboard.writeText(PAYPAL_EMAIL);setPaypalEmailCopied(true);window.setTimeout(()=>setPaypalEmailCopied(false),2200);}catch{setError(`Bitte kopiere die PayPal-Adresse manuell: ${PAYPAL_EMAIL}`);}};
+  const joinWaitlist=async()=>{
+    if(!service)return;
+    setWaitlistSaving(true);
+    setError('');
+    setWaitlistSuccess('');
+    try{
+      await api('/api/waitlist',{method:'POST',body:JSON.stringify({
+        serviceId:service.id,
+        preferredDate:waitlistForm.preferredDate || date?.value || '',
+        timeWindow:waitlistForm.timeWindow,
+        firstName:waitlistForm.firstName,
+        lastName:waitlistForm.lastName,
+        email:waitlistForm.email,
+        phone:waitlistForm.phone,
+        note:waitlistForm.note,
+      })});
+      setWaitlistSuccess('Danke, du stehst jetzt auf der Warteliste.');
+      setWaitlistOpen(false);
+      setWaitlistForm({firstName:'',lastName:'',email:'',phone:'',preferredDate:date?.value||'',timeWindow:'egal',note:''});
+    }catch(err){
+      setError(err.message);
+    }finally{
+      setWaitlistSaving(false);
+    }
+  };
   const timeLeft=`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(seconds%60).padStart(2,'0')}`;
 
   return <main className="booking-shell">
@@ -287,6 +386,33 @@ function BookingApp({ onAdmin }) {
       {step===2&&<div className="flow-content"><button className="inline-back" onClick={()=>editStep(1)}><ArrowLeft size={17}/> Service</button><StepHeader step="2" title="Wähle deinen Termin" text="Es werden ausschließlich aktuell verfügbare, zur Behandlungsdauer passende Zeiten angezeigt."/>
         {loading&&!dates.length?<div className="date-hint"><Clock size={24}/><span>Die nächsten freien Tage werden gesucht …</span></div>:<div className="date-picker">{dates.map((item)=><button key={item.value} className={date?.value===item.value?'selected':''} onClick={()=>{setDate(item);setError('');}}><span>{item.day}</span><strong>{item.date}</strong><small>{item.month}</small></button>)}</div>}
         {date?<div className="times-section"><div className="times-label"><span><i/>Verfügbar am {date.full}</span><small>Zeitzone Berlin</small></div>{loading?<div className="date-hint"><Clock size={24}/><span>Freie Zeiten werden geprüft …</span></div>:slots.length?<div className="time-options">{slots.map((item)=><button key={item} className={slot===item?'selected':''} onClick={()=>setSlot(item)}>{item}</button>)}</div>:<div className="date-hint"><CalendarBlank size={24}/><span>An diesem Tag ist nichts mehr frei.</span></div>}</div>:<div className="date-hint"><CalendarBlank size={24}/><span>Wähle zuerst einen Tag.</span></div>}
+        <section className="waitlist-card">
+          <div className="waitlist-card-head">
+            <div>
+              <span>Kein passender Termin?</span>
+              <strong>Auf die Warteliste setzen</strong>
+              <p>Wir merken uns deinen Wunsch und Zahra sieht ihn direkt im Adminbereich.</p>
+            </div>
+            <button type="button" className="waitlist-toggle" onClick={()=>{setWaitlistSuccess('');setWaitlistOpen((current)=>!current);}}>
+              {waitlistOpen ? 'Schließen' : 'Warteliste öffnen'}
+            </button>
+          </div>
+          {waitlistSuccess && <div className="waitlist-success">{waitlistSuccess}</div>}
+          {waitlistOpen && <div className="waitlist-form">
+            <div className="contact-form compact">
+              <label>Vorname<input value={waitlistForm.firstName} onChange={updateWaitlist('firstName')} placeholder="Dein Vorname"/></label>
+              <label>Nachname<input value={waitlistForm.lastName} onChange={updateWaitlist('lastName')} placeholder="Dein Nachname"/></label>
+              <label className="wide">E-Mail<input type="email" value={waitlistForm.email} onChange={updateWaitlist('email')} placeholder="name@beispiel.de"/></label>
+              <label className="wide">Mobilnummer<input type="tel" value={waitlistForm.phone} onChange={updateWaitlist('phone')} placeholder="+49"/></label>
+              <label>Wunschdatum <span>optional</span><input type="date" value={waitlistForm.preferredDate} onChange={updateWaitlist('preferredDate')}/></label>
+              <label>Zeitfenster<select value={waitlistForm.timeWindow} onChange={updateWaitlist('timeWindow')}>{WAITLIST_TIME_WINDOWS.map((item)=><option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+              <label className="wide">Notiz <span>optional</span><textarea value={waitlistForm.note} onChange={updateWaitlist('note')} placeholder="Zum Beispiel: lieber nachmittags oder kurzfristig möglich."/></label>
+            </div>
+            <button type="button" className="waitlist-submit" disabled={!waitlistValid||waitlistSaving} onClick={joinWaitlist}>
+              {waitlistSaving ? 'Wird gespeichert …' : 'Auf Warteliste setzen'}
+            </button>
+          </div>}
+        </section>
         <button className="continue" disabled={!date||!slot||loading} onClick={reserveSlot}>10 Minuten reservieren <ArrowRight size={18}/></button>
       </div>}
 
@@ -363,8 +489,12 @@ function Admin({ onExit, onLoggedOut }) {
   const [bookings,setBookings]=useState([]);
   const [blocks,setBlocks]=useState([]);
   const [notifications,setNotifications]=useState([]);
+  const [waitlistEntries,setWaitlistEntries]=useState([]);
   const [sheet,setSheet]=useState(null);
   const [selectedBooking,setSelectedBooking]=useState(null);
+  const [customerProfile,setCustomerProfile]=useState(null);
+  const [profileDraft,setProfileDraft]=useState({adminNote:'',preferences:''});
+  const [profileSaving,setProfileSaving]=useState(false);
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const [bookingAlert,setBookingAlert]=useState(null);
@@ -390,7 +520,7 @@ function Admin({ onExit, onLoggedOut }) {
     rememberBookingAlert(seenBookingAlerts.current);
     setBookingAlert(nextAlert);
   };
-  const refresh=async()=>{setError('');try{const [calendarData,notificationData,serviceData]=await Promise.all([api(`/api/admin/calendar?from=${calendarFrom}&to=${calendarTo}`),api('/api/admin/notifications'),api('/api/services')]);const adminServices=withAdminOnlyServices(serviceData.services);setBookings(calendarData.bookings);setBlocks(calendarData.blocks);receiveNotifications(notificationData.notifications);setServices(adminServices);setManual((value)=>({...value,serviceId:value.serviceId||adminServices[0]?.id||''}));}catch(err){setError(err.message);}};
+  const refresh=async()=>{setError('');try{const [calendarData,notificationData,serviceData,waitlistData]=await Promise.all([api(`/api/admin/calendar?from=${calendarFrom}&to=${calendarTo}`),api('/api/admin/notifications'),api('/api/services'),api('/api/admin/waitlist')]);const adminServices=withAdminOnlyServices(serviceData.services);setBookings(calendarData.bookings);setBlocks(calendarData.blocks);receiveNotifications(notificationData.notifications);setServices(adminServices);setWaitlistEntries(waitlistData.entries);setManual((value)=>({...value,serviceId:value.serviceId||adminServices[0]?.id||''}));}catch(err){setError(err.message);}};
   useEffect(()=>{refresh();},[monthStart]);
   useEffect(()=>{const check=()=>api('/api/admin/notifications').then((data)=>receiveNotifications(data.notifications)).catch(()=>{});const timer=window.setInterval(check,10000);const onVisible=()=>{if(document.visibilityState==='visible')check();};document.addEventListener('visibilitychange',onVisible);return()=>{window.clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};},[]);
   useEffect(()=>{if(!manual.serviceId||!manual.date)return;api(`/api/availability?serviceId=${manual.serviceId}&date=${manual.date}`).then((data)=>setManualSlots(data.slots)).catch((err)=>setError(err.message));},[manual.serviceId,manual.date,sheet]);
@@ -400,6 +530,7 @@ function Admin({ onExit, onLoggedOut }) {
   const dayBlock=blocks.find((item)=>item.startsAt.slice(0,10)===selectedDate);
   const unread=notifications.filter((item)=>!item.readAt).length;
   const bookingById=new Map(bookings.map((item)=>[item.id,item]));
+  const activeWaitlistEntries=waitlistEntries.filter((item)=>item.status==='active');
   const bookingSearchTerm=bookingSearch.trim().toLowerCase();
   const bookingSearchResults=bookingSearchTerm
     ? bookings.filter((item)=>{
@@ -428,6 +559,9 @@ function Admin({ onExit, onLoggedOut }) {
   const updateServiceColor=(serviceId,color)=>setServiceColors((current)=>{const next={...current,[serviceId]:color};writeServiceColors(next);return next;});
   const openNotifications=async()=>{setBookingAlert(null);setSheet('notifications');if(unread){await api('/api/admin/notifications/read',{method:'POST',body:'{}'});setNotifications((items)=>items.map((item)=>({...item,readAt:item.readAt||new Date().toISOString()})));}};
   const openBookingMatch=(booking)=>{const bookingDate=new Date(`${booking.startsAt.slice(0,10)}T12:00:00`);setBookingSearch(`${booking.firstName} ${booking.lastName}`);setMonthStart(startMonth(bookingDate));setSelectedDate(booking.startsAt.slice(0,10));setSelectedBooking(booking);setSheet('details');};
+  const openCustomerProfile=async(booking)=>{try{const data=await api(`/api/admin/customer-profile/${booking.id}`);setCustomerProfile(data);setProfileDraft({adminNote:data.profile?.adminNote||'',preferences:data.profile?.preferences||''});setSheet('profile');}catch(err){setError(err.message);}};
+  const saveCustomerProfileChanges=async()=>{if(!selectedBooking)return;setProfileSaving(true);try{await api(`/api/admin/customer-profile/${selectedBooking.id}`,{method:'POST',body:JSON.stringify(profileDraft)});const data=await api(`/api/admin/customer-profile/${selectedBooking.id}`);setCustomerProfile(data);setProfileDraft({adminNote:data.profile?.adminNote||'',preferences:data.profile?.preferences||''});flash('Kundenprofil wurde gespeichert.');}catch(err){setError(err.message);}finally{setProfileSaving(false);}};
+  const updateWaitlistStatus=async(id,status)=>{try{await api(`/api/admin/waitlist/${id}`,{method:'PATCH',body:JSON.stringify({status})});flash('Warteliste wurde aktualisiert.');await refresh();}catch(err){setError(err.message);}};
   const logout=async()=>{await api('/api/admin/logout',{method:'POST',body:'{}'});onLoggedOut();};
 
   return <main className="admin-workspace">
@@ -445,14 +579,35 @@ function Admin({ onExit, onLoggedOut }) {
 
       <section className="quick-overview"><h3>Dieser Monat</h3><div><span><strong>{bookings.filter((item)=>item.startsAt.slice(0,7)===isoDate(monthStart).slice(0,7)).length}</strong> Termine</span><span><strong>{bookings.filter((item)=>item.startsAt.slice(0,7)===isoDate(monthStart).slice(0,7)&&item.paymentStatus==='paid').length*30} €</strong> erhalten</span><span><strong>{blocks.filter((item)=>item.startsAt.slice(0,7)===isoDate(monthStart).slice(0,7)).length}</strong> freie Tage</span></div></section>
       <section className="service-color-card"><h3>Service-Farben</h3><div className="service-color-list">{services.map((item)=><div key={item.id} className="service-color-row"><div className="service-color-info"><span className="service-color-dot" style={{background:colorForService(item.id)}}/><strong>{item.short}</strong></div><div className="service-color-palette">{SERVICE_COLOR_PALETTE.map((color)=><button key={color} type="button" className={colorForService(item.id)===color?'selected':''} style={{background:color}} onClick={()=>updateServiceColor(item.id,color)} aria-label={`${item.short} Farbe ${color}`}/> )}</div></div>)}</div></section>
+      <section className="waitlist-admin-card">
+        <div className="section-head">
+          <div>
+            <h3>Warteliste</h3>
+            <p>{activeWaitlistEntries.length ? `${activeWaitlistEntries.length} aktive Einträge warten auf freie Termine.` : 'Aktuell wartet niemand auf einen freien Termin.'}</p>
+          </div>
+          <button type="button" className="text-action" onClick={()=>setSheet('waitlist')}>Alles ansehen</button>
+        </div>
+        <div className="waitlist-preview-list">
+          {activeWaitlistEntries.slice(0,4).map((item)=><article key={item.id} className="waitlist-preview-entry">
+            <div>
+              <strong>{item.firstName} {item.lastName}</strong>
+              <span>{item.serviceShort} {item.preferredDate ? `· ${new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date(`${item.preferredDate}T12:00:00`))}` : '· Flexibel'} · {waitlistWindowLabel(item.timeWindow)}</span>
+            </div>
+            <button type="button" onClick={()=>updateWaitlistStatus(item.id,'notified')}>Informiert</button>
+          </article>)}
+          {!activeWaitlistEntries.length&&<div className="empty-search">Keine aktiven Wartelisten-Einträge.</div>}
+        </div>
+      </section>
     </section>
 
     <nav className="admin-bottom-actions">{!selectedDateIsSunday&&<button onClick={()=>{setManual((value)=>({...value,date:selectedDate}));setSheet('booking');}}><Plus size={21}/><span>Termin</span></button>}<button onClick={()=>{setFreeDay({fromDate:selectedDate,toDate:selectedDate,reason:'Frei'});setSheet('free-day');}}><CalendarBlank size={21}/><span>Freier Tag</span></button></nav>
 
     {sheet==='booking'&&<AdminSheet title="Termin eintragen" onClose={()=>setSheet(null)}><form className="admin-form admin-form--booking" onSubmit={saveManual}><section className="booking-intro"><div><span className="booking-eyebrow">Manueller Termin</span><h3>{manualDateView?.full||'Datum wählen'} · {manual.time||'Uhrzeit wählen'}</h3><p>Hier legst du einen Termin direkt fest, elegant und ohne Slotschranken.</p></div><div className="booking-preview"><strong>{selectedManualService?.short||'Service'}</strong><span>{selectedManualService?durationLabel(selectedManualService.duration):'Dauer'}</span></div></section><label className="booking-field booking-field--service">Service<select value={manual.serviceId} onChange={(e)=>setManual({...manual,serviceId:e.target.value})}>{services.map((item)=><option key={item.id} value={item.id}>{item.short}</option>)}</select></label><div className="booking-time-grid"><label className="booking-field"><span>Datum</span><input type="date" value={manual.date} onChange={(e)=>setManual({...manual,date:e.target.value})}/>{manualDateView&&<small>Ausgewählt: {manualDateView.full}</small>}</label><label className="booking-field"><span>Uhrzeit</span><input type="time" list="manual-slot-suggestions" value={manual.time} onChange={(e)=>setManual({...manual,time:e.target.value})}/><datalist id="manual-slot-suggestions">{manualSlots.map((time)=><option key={time} value={time}/>)}</datalist>{manualSlots.length>0&&<small>{manualSlots.length>1?'Vorschläge': 'Vorschlag'} für diesen Tag</small>}</label></div>{manualDateIsSunday?<p className="sheet-note">Sonntag bleibt immer frei. Für Sonntage können keine Termine angelegt werden.</p>:manualSlots.length>0&&<div className="booking-slots">{manualSlots.map((time)=><button type="button" key={time} className={`slot-chip ${manual.time===time?'selected':''}`} onClick={()=>setManual({...manual,time})}>{time}</button>)}</div>}<p className="sheet-note">Im Admin kannst du jede Uhrzeit vergeben. Die Vorschläge sind nur eine Hilfe.</p><div className="form-pair"><label>Vorname<input required value={manual.firstName} onChange={(e)=>setManual({...manual,firstName:e.target.value})}/></label><label>Nachname<input required value={manual.lastName} onChange={(e)=>setManual({...manual,lastName:e.target.value})}/></label></div><label>Telefon <span>optional</span><input value={manual.phone} onChange={(e)=>setManual({...manual,phone:e.target.value})}/></label><label>Notiz <span>optional</span><textarea value={manual.note} onChange={(e)=>setManual({...manual,note:e.target.value})}/></label><button className="sheet-primary" disabled={!manual.time||manualDateIsSunday}>Termin speichern</button></form></AdminSheet>}
     {sheet==='free-day'&&<AdminSheet title="Freie Tage eintragen" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveFreeDay}><div className="form-pair"><label>Von<input type="date" value={freeDay.fromDate} onChange={(e)=>setFreeDay((current)=>{const fromDate=e.target.value;return {...current,fromDate,toDate:current.toDate<fromDate?fromDate:current.toDate};})}/></label><label>Bis<input type="date" min={freeDay.fromDate} value={freeDay.toDate} onChange={(e)=>setFreeDay({...freeDay,toDate:e.target.value})}/></label></div><label>Grund<select value={freeDay.reason} onChange={(e)=>setFreeDay({...freeDay,reason:e.target.value})}><option>Frei</option><option>Urlaub</option><option>Krank</option><option>Fortbildung</option><option>Privater Termin</option></select></label><p className="sheet-note">Der Zeitraum verschwindet sofort aus der Online-Buchung. Bestehende Termine im Zeitraum müssen vorher verschoben oder storniert werden.</p><button className="sheet-primary">{eachDateInRange(freeDay.fromDate,freeDay.toDate).length>1?'Zeitraum blockieren':'Tag blockieren'}</button></form></AdminSheet>}
-    {sheet==='details'&&selectedBooking&&<AdminSheet title="Termindetails" onClose={()=>setSheet(null)}><div className="appointment-detail"><div className="detail-person"><span>{selectedBooking.firstName[0]}{selectedBooking.lastName[0]}</span><div><h3>{selectedBooking.firstName} {selectedBooking.lastName}</h3><p>{selectedBooking.phone||'Keine Telefonnummer'}</p></div></div><dl><div><dt>Uhrzeit Buchung</dt><dd>{selectedBooking.startsAt.slice(11,16)} Uhr</dd></div><div><dt>Service</dt><dd>{selectedBooking.serviceName}</dd></div><div><dt>Status</dt><dd><span className={`status-pill ${selectedBooking.confirmationStatus==='confirmed'?'confirmed':selectedBooking.paymentStatus==='paid'?'checked':'pending'}`}>{selectedBooking.confirmationStatus==='confirmed'?'Final bestätigt':selectedBooking.paymentStatus==='paid'?'Anzahlung geprüft, noch offen':'Reservierung vorgemerkt · 30 € offen'}</span></dd></div>{selectedBooking.reminderQueuedAt&&<div><dt>Erinnerung</dt><dd>{selectedBooking.reminderChannel==='sms'?'SMS':'E-Mail'} ist für 24h vorher eingeplant.</dd></div>}{selectedBooking.note&&<div><dt>Notiz</dt><dd>{selectedBooking.note}</dd></div>}</dl><div className="sheet-actions">{hasOpenDeposit(selectedBooking)&&<button className="sheet-secondary sheet-primary-action" onClick={confirmDeposit}><Check size={17}/> Anzahlung bestätigt</button>}<button className="sheet-secondary" onClick={()=>{setMove({date:selectedBooking.startsAt.slice(0,10),time:''});setSheet('move');}}><CalendarBlank size={17}/> Termin verschieben</button><button className="sheet-danger" onClick={()=>cancelAppointment(selectedBooking.id)}><Trash size={17}/> Termin stornieren</button></div></div></AdminSheet>}
+    {sheet==='details'&&selectedBooking&&<AdminSheet title="Termindetails" onClose={()=>setSheet(null)}><div className="appointment-detail"><div className="detail-person"><span>{selectedBooking.firstName[0]}{selectedBooking.lastName[0]}</span><div><h3>{selectedBooking.firstName} {selectedBooking.lastName}</h3><p>{selectedBooking.phone||'Keine Telefonnummer'}</p></div></div><dl><div><dt>Uhrzeit Buchung</dt><dd>{selectedBooking.startsAt.slice(11,16)} Uhr</dd></div><div><dt>Service</dt><dd>{selectedBooking.serviceName}</dd></div><div><dt>Status</dt><dd><span className={`status-pill ${selectedBooking.confirmationStatus==='confirmed'?'confirmed':selectedBooking.paymentStatus==='paid'?'checked':'pending'}`}>{selectedBooking.confirmationStatus==='confirmed'?'Final bestätigt':selectedBooking.paymentStatus==='paid'?'Anzahlung geprüft, noch offen':'Reservierung vorgemerkt · 30 € offen'}</span></dd></div>{selectedBooking.reminderQueuedAt&&<div><dt>Erinnerung</dt><dd>{selectedBooking.reminderChannel==='sms'?'SMS':'E-Mail'} ist für 24h vorher eingeplant.</dd></div>}{selectedBooking.note&&<div><dt>Notiz</dt><dd>{selectedBooking.note}</dd></div>}</dl><div className="sheet-actions">{hasOpenDeposit(selectedBooking)&&<button className="sheet-secondary sheet-primary-action" onClick={confirmDeposit}><Check size={17}/> Anzahlung bestätigt</button>}<button className="sheet-secondary" onClick={()=>openCustomerProfile(selectedBooking)}><User size={17}/> Kundenprofil</button><button className="sheet-secondary" onClick={()=>{setMove({date:selectedBooking.startsAt.slice(0,10),time:''});setSheet('move');}}><CalendarBlank size={17}/> Termin verschieben</button><button className="sheet-danger" onClick={()=>cancelAppointment(selectedBooking.id)}><Trash size={17}/> Termin stornieren</button></div></div></AdminSheet>}
     {sheet==='move'&&selectedBooking&&<AdminSheet title="Termin verschieben" onClose={()=>setSheet(null)}><form className="admin-form" onSubmit={saveMove}><p className="sheet-note">{selectedBooking.firstName} {selectedBooking.lastName} · {selectedBooking.serviceShort}</p><label>Neues Datum<input type="date" value={move.date} onChange={(e)=>setMove({...move,date:e.target.value})}/></label><label>Neue Uhrzeit<input type="time" list="move-slot-suggestions" value={move.time} onChange={(e)=>setMove({...move,time:e.target.value})}/><datalist id="move-slot-suggestions">{moveSlots.map((time)=><option key={time} value={time}/>)}</datalist></label>{moveDateIsSunday&&<p className="sheet-note">Sonntag bleibt immer frei. Auf Sonntage kann nicht verschoben werden.</p>}<p className="sheet-note">Auch beim Verschieben darf der Admin jede Uhrzeit setzen. Die Vorschläge sind optional.</p><button className="sheet-primary" disabled={!move.time||moveDateIsSunday}>Verschieben</button></form></AdminSheet>}
+    {sheet==='profile'&&selectedBooking&&customerProfile&&<AdminSheet title="Stammkunden-Profil" onClose={()=>setSheet(null)}><div className="profile-sheet"><div className="profile-summary"><div><strong>{customerProfile.profile?.firstName} {customerProfile.profile?.lastName}</strong><span>{customerProfile.profile?.email||'Keine E-Mail'} · {customerProfile.profile?.phone||'Keine Nummer'}</span></div><div className="profile-stats"><span><b>{customerProfile.stats?.totalBookings||0}</b> Termine</span><span><b>{customerProfile.stats?.cancellations||0}</b> Stornos</span></div></div><label>Interne Notiz<textarea value={profileDraft.adminNote} onChange={(e)=>setProfileDraft((current)=>({...current,adminNote:e.target.value}))} placeholder="Zum Beispiel: empfindliche Kopfhaut, bevorzugt ruhiger Vormittag."/></label><label>Vorlieben / Wünsche<textarea value={profileDraft.preferences} onChange={(e)=>setProfileDraft((current)=>({...current,preferences:e.target.value}))} placeholder="Zum Beispiel: kühles Blond, Glossing nur ohne Schnitt."/></label><button className="sheet-primary" disabled={profileSaving} onClick={saveCustomerProfileChanges}>{profileSaving?'Wird gespeichert …':'Kundenprofil speichern'}</button><div className="profile-history"><h3>Terminverlauf</h3>{customerProfile.history.length?customerProfile.history.map((item)=><article key={item.id}><strong>{new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date(item.startsAt))} · {item.startsAt.slice(11,16)} Uhr</strong><span>{item.serviceShort} · {item.status==='cancelled'?'Storniert':'Gebucht'}</span></article>):<p>Noch kein Verlauf vorhanden.</p>}</div>{customerProfile.waitlistEntries.length>0&&<div className="profile-history"><h3>Warteliste</h3>{customerProfile.waitlistEntries.map((item)=><article key={item.id}><strong>{item.preferredDate?new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date(`${item.preferredDate}T12:00:00`)):'Flexibel'} · {waitlistWindowLabel(item.timeWindow)}</strong><span>{item.status}</span></article>)}</div>}</div></AdminSheet>}
+    {sheet==='waitlist'&&<AdminSheet title="Warteliste" onClose={()=>setSheet(null)}><div className="waitlist-sheet">{waitlistEntries.length?waitlistEntries.map((item)=><article key={item.id} className="waitlist-sheet-entry"><div><strong>{item.firstName} {item.lastName}</strong><span>{item.serviceShort} · {item.preferredDate?new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date(`${item.preferredDate}T12:00:00`)):'Flexibel'} · {waitlistWindowLabel(item.timeWindow)}</span><small>{item.email} · {item.phone}</small>{item.note&&<p>{item.note}</p>}</div><div className="waitlist-actions"><button type="button" onClick={()=>updateWaitlistStatus(item.id,item.status==='active'?'notified':'active')}>{item.status==='active'?'Informiert':'Reaktivieren'}</button><button type="button" onClick={()=>updateWaitlistStatus(item.id,'archived')}>Archivieren</button></div></article>):<div className="empty-notifications">Keine Wartelisten-Einträge vorhanden.</div>}</div></AdminSheet>}
     {sheet==='notifications'&&<AdminSheet title="Benachrichtigungen" onClose={()=>setSheet(null)}><div className="notification-list">{notifications.length?notifications.map((item)=>{const relatedBooking=bookingById.get(item.bookingId);const appointmentStartsAt=item.appointmentStartsAt||relatedBooking?.startsAt||null;const serviceName=item.serviceName||relatedBooking?.serviceName||relatedBooking?.serviceShort||'';const content=<><span><Bell size={17}/></span><div><strong>{item.title}</strong><p>{item.message}</p>{appointmentStartsAt&&<b>{new Intl.DateTimeFormat('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date(appointmentStartsAt))} · {appointmentStartsAt.slice(11,16)} Uhr{serviceName?` · ${serviceName}`:''}</b>}<small>{new Intl.DateTimeFormat('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}).format(new Date(item.createdAt))}</small></div></>;return relatedBooking?<button key={item.id} type="button" className={`notification-entry ${!item.readAt?'unread':''}`} onClick={()=>openBookingMatch(relatedBooking)}>{content}</button>:<article key={item.id} className={!item.readAt?'unread':''}>{content}</article>; }):<div className="empty-notifications">Keine neuen Benachrichtigungen.</div>}</div></AdminSheet>}
   </main>;
 }

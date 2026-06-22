@@ -83,6 +83,35 @@ export function createDatabase(filename) {
       last_seen_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS admin_sessions_expiry_idx ON admin_sessions(expires_at);
+    CREATE TABLE IF NOT EXISTS customer_profiles (
+      id TEXT PRIMARY KEY,
+      first_name TEXT NOT NULL,
+      last_name TEXT NOT NULL,
+      email TEXT,
+      phone TEXT,
+      admin_note TEXT NOT NULL DEFAULT '',
+      preferences TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS waitlist_entries (
+      id TEXT PRIMARY KEY,
+      service_id TEXT NOT NULL REFERENCES services(id),
+      preferred_date TEXT,
+      time_window TEXT NOT NULL DEFAULT 'egal' CHECK (time_window IN ('egal','vormittag','nachmittag')),
+      first_name TEXT NOT NULL,
+      last_name TEXT NOT NULL,
+      email TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      note TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','notified','booked','archived')),
+      notified_at TEXT,
+      matched_booking_id TEXT REFERENCES bookings(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS customer_profiles_updated_idx ON customer_profiles(updated_at);
+    CREATE INDEX IF NOT EXISTS waitlist_entries_status_idx ON waitlist_entries(status, service_id, preferred_date, created_at);
   `);
   const tableColumns = (table) => new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name));
   const addColumn = (table, definition) => {
@@ -97,6 +126,22 @@ export function createDatabase(filename) {
   addColumn('notifications', 'service_name TEXT');
   addColumn('customer_messages', 'attempts INTEGER NOT NULL DEFAULT 0');
   addColumn('customer_messages', 'last_error TEXT');
+  addColumn('customer_profiles', "admin_note TEXT NOT NULL DEFAULT ''");
+  addColumn('customer_profiles', "preferences TEXT NOT NULL DEFAULT ''");
+  addColumn('waitlist_entries', "time_window TEXT NOT NULL DEFAULT 'egal'");
+  addColumn('waitlist_entries', "status TEXT NOT NULL DEFAULT 'active'");
+  addColumn('waitlist_entries', 'notified_at TEXT');
+  addColumn('waitlist_entries', 'matched_booking_id TEXT REFERENCES bookings(id)');
+  addColumn('waitlist_entries', 'updated_at TEXT');
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS customer_profiles_email_uidx
+    ON customer_profiles(lower(email))
+    WHERE email IS NOT NULL AND trim(email) <> '';
+    CREATE UNIQUE INDEX IF NOT EXISTS customer_profiles_phone_uidx
+    ON customer_profiles(phone)
+    WHERE phone IS NOT NULL AND trim(phone) <> '';
+  `);
 
   const insertService = db.prepare(`
     INSERT INTO services (id, name, short_name, duration_minutes) VALUES (?, ?, ?, ?)

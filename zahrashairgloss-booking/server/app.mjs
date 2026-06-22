@@ -4,7 +4,31 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { createDatabase } from './database.mjs';
 import { createAuth } from './auth.mjs';
-import { TERMS_VERSION, cancelBooking, confirmDemoPayment, createBlockedPeriod, createHold, createManualBooking, deleteBlockedPeriod, listAvailableSlots, listBlockedPeriods, listBookableDates, listBookings, listBookingsRange, listNotifications, listServices, markNotificationsRead, markBookingPaid, releaseHold, rescheduleBooking } from './booking-service.mjs';
+import {
+  TERMS_VERSION,
+  cancelBooking,
+  confirmDemoPayment,
+  createBlockedPeriod,
+  createHold,
+  createManualBooking,
+  createWaitlistEntry,
+  deleteBlockedPeriod,
+  getCustomerProfileContext,
+  listAvailableSlots,
+  listBlockedPeriods,
+  listBookableDates,
+  listBookings,
+  listBookingsRange,
+  listNotifications,
+  listServices,
+  listWaitlistEntries,
+  markNotificationsRead,
+  markBookingPaid,
+  releaseHold,
+  rescheduleBooking,
+  saveCustomerProfile,
+  updateWaitlistEntry,
+} from './booking-service.mjs';
 import { createMailTransportFromEnv, flushQueuedCustomerMessages } from './mail.mjs';
 
 const root=resolve(fileURLToPath(new URL('..',import.meta.url)));
@@ -26,6 +50,7 @@ async function api(req,res,url){
     if(req.method==='POST'&&url.pathname==='/api/holds')return send(res,201,{hold:createHold(db,await readJson(req))});
     if(req.method==='DELETE'&&url.pathname.startsWith('/api/holds/')){releaseHold(db,url.pathname.split('/').pop());return send(res,200,{released:true});}
     if(req.method==='POST'&&url.pathname==='/api/bookings/confirm-demo-payment'){const booking=confirmDemoPayment(db,await readJson(req));void flushMailQueue();return send(res,201,{booking});}
+    if(req.method==='POST'&&url.pathname==='/api/waitlist')return send(res,201,{entry:createWaitlistEntry(db,await readJson(req))});
     if(req.method==='GET'&&url.pathname==='/api/admin/session')return send(res,200,{authenticated:Boolean(auth.session(req)),configured:auth.configured});
     if(req.method==='POST'&&url.pathname==='/api/admin/login'){auth.login(req,res,(await readJson(req)).password);return send(res,200,{authenticated:true});}
     if(req.method==='POST'&&url.pathname==='/api/admin/logout'){auth.logout(req,res);return send(res,200,{authenticated:false});}
@@ -40,6 +65,10 @@ async function api(req,res,url){
     if(req.method==='DELETE'&&url.pathname.startsWith('/api/admin/blocks/')){deleteBlockedPeriod(db,url.pathname.split('/').pop());return send(res,200,{deleted:true});}
     if(req.method==='GET'&&url.pathname==='/api/admin/notifications')return send(res,200,{notifications:listNotifications(db)});
     if(req.method==='POST'&&url.pathname==='/api/admin/notifications/read'){markNotificationsRead(db);return send(res,200,{read:true});}
+    if(req.method==='GET'&&url.pathname==='/api/admin/waitlist')return send(res,200,{entries:listWaitlistEntries(db)});
+    if(req.method==='PATCH'&&url.pathname.startsWith('/api/admin/waitlist/'))return send(res,200,{entry:updateWaitlistEntry(db,url.pathname.split('/').pop(),await readJson(req))});
+    if(req.method==='GET'&&url.pathname.startsWith('/api/admin/customer-profile/'))return send(res,200,getCustomerProfileContext(db,url.pathname.split('/').pop()));
+    if(req.method==='POST'&&url.pathname.startsWith('/api/admin/customer-profile/'))return send(res,200,{profile:saveCustomerProfile(db,url.pathname.split('/').pop(),await readJson(req))});
     return send(res,404,{error:'Nicht gefunden.'});
   }catch(error){
     const status=/Zu viele Versuche/.test(error.message)?429:/Passwort ist nicht korrekt/.test(error.message)?401:/nicht mehr verfügbar|abgelaufen/.test(error.message)?409:400;

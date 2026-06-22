@@ -19,6 +19,7 @@ const addDays = (date, days) => {
 };
 
 const REGULAR_SERVICE_IDS = new Set(['cut', 'gloss', 'gloss-cut', 'colour']);
+const WAITLIST_TIME_WINDOWS = new Set(['egal', 'vormittag', 'nachmittag']);
 
 function adminNotification(db, bookingId, type, title, message, createdAt = new Date().toISOString(), details = {}) {
   db.prepare(`INSERT INTO notifications(id,booking_id,type,title,message,appointment_starts_at,service_name,created_at) VALUES(?,?,?,?,?,?,?,?)`).run(
@@ -83,6 +84,93 @@ function processReminderQueue(db, now = new Date()) {
 
 function touchSchedulers(db, now = new Date()) {
   processReminderQueue(db, now);
+}
+
+const normalizeEmail = (value) => value?.trim().toLowerCase() || '';
+const normalizePhone = (value) => value?.trim() || '';
+const bookingTimeWindow = (startsAt) => {
+  const hour = Number(String(startsAt).slice(11, 13));
+  return Number.isFinite(hour) && hour < 13 ? 'vormittag' : 'nachmittag';
+};
+
+function findCustomerProfile(db, { email = '', phone = '' }) {
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPhone = normalizePhone(phone);
+  if (normalizedEmail) {
+    const profile = db.prepare(`
+      SELECT id, first_name AS firstName, last_name AS lastName, email, phone,
+        admin_note AS adminNote, preferences, created_at AS createdAt, updated_at AS updatedAt
+      FROM customer_profiles
+      WHERE lower(email)=?
+    `).get(normalizedEmail);
+    if (profile) return profile;
+  }
+  if (normalizedPhone) {
+    return db.prepare(`
+      SELECT id, first_name AS firstName, last_name AS lastName, email, phone,
+        admin_note AS adminNote, preferences, created_at AS createdAt, updated_at AS updatedAt
+      FROM customer_profiles
+      WHERE phone=?
+    `).get(normalizedPhone);
+  }
+  return null;
+}
+
+function ensureCustomerProfile(db, customer, now = new Date()) {
+  const firstName = customer?.firstName?.trim();
+  const lastName = customer?.lastName?.trim();
+  if (!firstName || !lastName) return null;
+  const email = normalizeEmail(customer.email);
+  const phone = normalizePhone(customer.phone);
+  const timestamp = now.toISOString();
+  const existing = findCustomerProfile(db, { email, phone });
+  if (existing) {
+    db.prepare(`
+      UPDATE customer_profiles
+      SET first_name=?, last_name=?, email=?, phone=?, updated_at=?
+      WHERE id=?
+    `).run(firstName, lastName, email || existing.email || null, phone || existing.phone || null, timestamp, existing.id);
+    return { ...existing, firstName, lastName, email: email || existing.email || '', phone: phone || existing.phone || '', updatedAt: timestamp };
+  }
+  const profile = {
+    id: randomUUID(),
+    firstName,
+    lastName,
+    email,
+    phone,
+    adminNote: '',
+    preferences: '',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  db.prepare(`
+    INSERT INTO customer_profiles(id, first_name, last_name, email, phone, admin_note, preferences, created_at, updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?)
+  `).run(
+    profile.id,
+    profile.firstName,
+    profile.lastName,
+    profile.email || null,
+    profile.phone || null,
+    profile.adminNote,
+    profile.preferences,
+    profile.createdAt,
+    profile.updatedAt,
+  );
+  return profile;
+}
+
+function matchingWaitlistCount(db, { serviceId, startsAt }) {
+  const date = String(startsAt).slice(0, 10);
+  const window = bookingTimeWindow(startsAt);
+  return db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM waitlist_entries
+    WHERE status='active'
+      AND service_id=?
+      AND (preferred_date IS NULL OR preferred_date='' OR preferred_date=?)
+      AND (time_window='egal' OR time_window=?)
+  `).get(serviceId, date, window).count;
 }
 
 function serviceDurationMinutes(db, serviceId) {
@@ -255,6 +343,7 @@ export function confirmDemoPayment(db, { holdId, customer, acceptedTermsVersion 
       sendAfter: now.toISOString(),
       createdAt: now.toISOString(),
     });
+    ensureCustomerProfile(db, customer, now);
     return {...booking,depositCents:3000,startsAt:hold.starts_at};
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
@@ -328,6 +417,7 @@ export function createManualBooking(db,{serviceId,date,time,customer},now=new Da
       bookingId,holdId,serviceId,startsAt,endsAt,
       customer.firstName.trim(),customer.lastName.trim(),customer.email?.trim()||'',customer.phone?.trim()||'',customer.note?.trim()||null,
       'manual-admin',createdAt,createdAt,createdAt);
+    ensureCustomerProfile(db, customer, now);
     db.exec('COMMIT');return {id:bookingId};
   }catch(error){db.exec('ROLLBACK');throw error;}
 }
@@ -336,7 +426,7 @@ export function cancelBooking(db,id) {
   cleanupExpiredPendingBookings(db);
   const booking = db.prepare(`
     SELECT b.id, b.email, b.starts_at AS startsAt, b.first_name AS firstName, b.last_name AS lastName,
-      s.name AS serviceName
+      s.id AS serviceId, s.name AS serviceName
     FROM bookings b
     JOIN services s ON s.id=b.service_id
     WHERE b.id=? AND b.status='confirmed'
@@ -363,6 +453,18 @@ export function cancelBooking(db,id) {
       sendAfter: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     });
+  }
+  const waitlistCount = matchingWaitlistCount(db, booking);
+  if (waitlistCount > 0) {
+    adminNotification(
+      db,
+      null,
+      'waitlist_match',
+      'Warteliste passt',
+      `${waitlistCount} Wartelisten-Einträge passen zu ${booking.serviceName} am ${booking.startsAt.slice(0, 10)}.`,
+      new Date().toISOString(),
+      { appointmentStartsAt: booking.startsAt, serviceName: booking.serviceName },
+    );
   }
 }
 
@@ -398,6 +500,134 @@ export function rescheduleBooking(db,id,{date,time},now=new Date()) {
       .run(startsAt, endsAt, id);
     db.exec('COMMIT');return {id,startsAt:localIso(date,time)};
   }catch(error){db.exec('ROLLBACK');throw error;}
+}
+
+export function createWaitlistEntry(db, payload, now = new Date()) {
+  const firstName = payload?.firstName?.trim();
+  const lastName = payload?.lastName?.trim();
+  const email = normalizeEmail(payload?.email);
+  const phone = normalizePhone(payload?.phone);
+  const serviceId = payload?.serviceId?.trim();
+  const preferredDate = payload?.preferredDate?.trim() || null;
+  const timeWindow = WAITLIST_TIME_WINDOWS.has(payload?.timeWindow) ? payload.timeWindow : 'egal';
+  const note = payload?.note?.trim() || null;
+  if (!serviceId) throw new Error('Bitte zuerst einen Service auswählen.');
+  if (!firstName || !lastName || !email || !phone) throw new Error('Bitte fülle Vorname, Nachname, E-Mail und Telefon aus.');
+  if (preferredDate && !/^\d{4}-\d{2}-\d{2}$/.test(preferredDate)) throw new Error('Bitte wähle ein gültiges Wunschdatum.');
+  const service = db.prepare('SELECT name, short_name AS shortName FROM services WHERE id=? AND active=1').get(serviceId);
+  if (!service) throw new Error('Unbekannter Service.');
+  const timestamp = now.toISOString();
+  const existing = db.prepare(`
+    SELECT id
+    FROM waitlist_entries
+    WHERE status='active'
+      AND service_id=?
+      AND lower(email)=?
+      AND phone=?
+      AND coalesce(preferred_date,'')=coalesce(?, '')
+      AND time_window=?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(serviceId, email, phone, preferredDate, timeWindow);
+  if (existing) throw new Error('Du stehst für diesen Wunsch bereits auf der Warteliste.');
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO waitlist_entries(
+      id, service_id, preferred_date, time_window, first_name, last_name, email, phone, note, status, created_at, updated_at
+    ) VALUES(?,?,?,?,?,?,?,?,?,'active',?,?)
+  `).run(id, serviceId, preferredDate, timeWindow, firstName, lastName, email, phone, note, timestamp, timestamp);
+  ensureCustomerProfile(db, { firstName, lastName, email, phone }, now);
+  adminNotification(
+    db,
+    null,
+    'waitlist_created',
+    'Neue Warteliste',
+    `${firstName} ${lastName} möchte für ${service.name} informiert werden.`,
+    timestamp,
+    { serviceName: service.name },
+  );
+  return { id, serviceName: service.name, serviceShort: service.shortName };
+}
+
+export function listWaitlistEntries(db) {
+  return db.prepare(`
+    SELECT w.id, w.service_id AS serviceId, s.name AS serviceName, s.short_name AS serviceShort,
+      w.preferred_date AS preferredDate, w.time_window AS timeWindow, w.first_name AS firstName,
+      w.last_name AS lastName, w.email, w.phone, w.note, w.status, w.notified_at AS notifiedAt,
+      w.created_at AS createdAt, w.updated_at AS updatedAt
+    FROM waitlist_entries w
+    JOIN services s ON s.id = w.service_id
+    ORDER BY CASE w.status
+      WHEN 'active' THEN 0
+      WHEN 'notified' THEN 1
+      WHEN 'booked' THEN 2
+      ELSE 3
+    END, w.created_at DESC
+  `).all();
+}
+
+export function updateWaitlistEntry(db, id, { status }, now = new Date()) {
+  const nextStatus = ['active', 'notified', 'booked', 'archived'].includes(status) ? status : null;
+  if (!nextStatus) throw new Error('Ungültiger Wartelisten-Status.');
+  const existing = db.prepare('SELECT id FROM waitlist_entries WHERE id=?').get(id);
+  if (!existing) throw new Error('Wartelisten-Eintrag wurde nicht gefunden.');
+  db.prepare(`
+    UPDATE waitlist_entries
+    SET status=?, notified_at=?, updated_at=?
+    WHERE id=?
+  `).run(nextStatus, nextStatus === 'notified' ? now.toISOString() : null, now.toISOString(), id);
+  return { id, status: nextStatus };
+}
+
+export function getCustomerProfileContext(db, bookingId, now = new Date()) {
+  const booking = db.prepare(`
+    SELECT id, first_name AS firstName, last_name AS lastName, email, phone
+    FROM bookings
+    WHERE id=?
+  `).get(bookingId);
+  if (!booking) throw new Error('Termin wurde nicht gefunden.');
+  const profile = ensureCustomerProfile(db, booking, now);
+  const history = db.prepare(`
+    SELECT b.id, b.starts_at AS startsAt, b.status, b.payment_status AS paymentStatus,
+      s.name AS serviceName, s.short_name AS serviceShort
+    FROM bookings b
+    JOIN services s ON s.id = b.service_id
+    WHERE (lower(b.email)=? AND ? <> '') OR (b.phone=? AND ? <> '')
+    ORDER BY b.starts_at DESC
+    LIMIT 12
+  `).all(normalizeEmail(profile.email), normalizeEmail(profile.email), normalizePhone(profile.phone), normalizePhone(profile.phone));
+  const waitlistEntries = db.prepare(`
+    SELECT id, service_id AS serviceId, preferred_date AS preferredDate, time_window AS timeWindow,
+      status, created_at AS createdAt
+    FROM waitlist_entries
+    WHERE (lower(email)=? AND ? <> '') OR (phone=? AND ? <> '')
+    ORDER BY created_at DESC
+    LIMIT 12
+  `).all(normalizeEmail(profile.email), normalizeEmail(profile.email), normalizePhone(profile.phone), normalizePhone(profile.phone));
+  return {
+    profile,
+    history,
+    waitlistEntries,
+    stats: {
+      totalBookings: history.filter((item) => item.status === 'confirmed').length,
+      cancellations: history.filter((item) => item.status === 'cancelled').length,
+    },
+  };
+}
+
+export function saveCustomerProfile(db, bookingId, { adminNote = '', preferences = '' }, now = new Date()) {
+  const context = getCustomerProfileContext(db, bookingId, now);
+  db.prepare(`
+    UPDATE customer_profiles
+    SET admin_note=?, preferences=?, updated_at=?
+    WHERE id=?
+  `).run(adminNote.trim(), preferences.trim(), now.toISOString(), context.profile.id);
+  return {
+    ...context.profile,
+    adminNote: adminNote.trim(),
+    preferences: preferences.trim(),
+    updatedAt: now.toISOString(),
+  };
 }
 
 export function listNotifications(db) {
