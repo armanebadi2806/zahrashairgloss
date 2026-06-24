@@ -560,7 +560,18 @@ function Admin({ onExit, onLoggedOut }) {
   const saveManual=async(event)=>{event.preventDefault();try{await api('/api/admin/bookings',{method:'POST',body:JSON.stringify({serviceId:manual.serviceId,date:manual.date,time:manual.time,customer:{firstName:manual.firstName,lastName:manual.lastName,email:manual.email,phone:manual.phone,note:manual.note}})});setSheet(null);setSelectedDate(manual.date);flash('Termin wurde eingetragen.');await refresh();}catch(err){setError(err.message);}};
   const saveFreeDay=async(event)=>{event.preventDefault();try{const result=await api('/api/admin/blocks',{method:'POST',body:JSON.stringify(freeDay)});setSheet(null);setSelectedDate(freeDay.fromDate);const count=result?.block?.count||result?.count||1;flash(count>1?`${count} freie Tage wurden gespeichert.`:'Freier Tag wurde gespeichert.');await refresh();}catch(err){setError(err.message);}};
   const removeBlock=async(id)=>{await api(`/api/admin/blocks/${id}`,{method:'DELETE'});flash('Tag ist wieder buchbar.');await refresh();};
-  const cancelAppointment=async(id)=>{if(!window.confirm('Termin wirklich stornieren?'))return;await api(`/api/admin/bookings/${id}`,{method:'DELETE'});setSelectedBooking(null);setSheet(null);flash('Termin wurde storniert.');await refresh();};
+  const cancelAppointment=async(id)=>{
+    if(!window.confirm('Termin wirklich stornieren?'))return;
+    try{
+      await api(`/api/admin/bookings/${id}`,{method:'DELETE'});
+      setSelectedBooking(null);
+      setSheet(null);
+      flash('Termin wurde storniert.');
+      await refresh();
+    }catch(err){
+      setError(err.message||'Der Termin konnte nicht storniert werden.');
+    }
+  };
   const saveMove=async(event)=>{event.preventDefault();try{await api(`/api/admin/bookings/${selectedBooking.id}`,{method:'PATCH',body:JSON.stringify(move)});setSheet(null);setSelectedDate(move.date);flash('Termin wurde verschoben.');await refresh();}catch(err){setError(err.message);}};
   const confirmDeposit=async()=>{try{const result=await api(`/api/admin/bookings/${selectedBooking.id}/payment`,{method:'POST',body:JSON.stringify({booking:{id:selectedBooking.id,serviceId:selectedBooking.serviceId,serviceName:selectedBooking.serviceName,serviceShort:selectedBooking.serviceShort,startsAt:selectedBooking.startsAt,firstName:selectedBooking.firstName,lastName:selectedBooking.lastName,email:selectedBooking.email,phone:selectedBooking.phone,note:selectedBooking.note,paymentStatus:'paid',confirmationStatus:'confirmed'}})});setSelectedBooking((current)=>current?{...current,paymentStatus:'paid',confirmationStatus:'confirmed'}:current);flash(result?.emailSent===false?'Anzahlung bestätigt, aber die Bestätigungsmail konnte nicht gesendet werden.':'Anzahlung bestätigt. Finale Bestätigung ist vorbereitet.');await refresh();}catch(err){setError(err.message);}};
   const updateServiceColor=(serviceId,color)=>setServiceColors((current)=>{const next={...current,[serviceId]:color};writeServiceColors(next);return next;});
