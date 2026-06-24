@@ -7,10 +7,12 @@
     "dev": "node scripts/dev.mjs",
     "api": "node server/app.mjs",
     "build": "vite build",
+    "build:pages": "vite build && node scripts/sync-pages-export.mjs && node scripts/verify-pages-export.mjs",
     "build:github": "vite build --mode github",
     "preview": "vite preview --host 127.0.0.1",
     "start": "SERVE_FRONTEND=true node server/app.mjs",
     "test": "node --test server/*.test.mjs",
+    "verify:pages": "node scripts/verify-pages-export.mjs",
     "hash-password": "node scripts/hash-password.mjs"
   },
   "dependencies": {
