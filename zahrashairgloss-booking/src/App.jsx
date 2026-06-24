@@ -535,6 +535,9 @@ function Admin({ onExit, onLoggedOut }) {
   const unread=notifications.filter((item)=>!item.readAt).length;
   const bookingById=new Map(bookings.map((item)=>[item.id,item]));
   const activeWaitlistEntries=waitlistEntries.filter((item)=>item.status==='active');
+  const pendingDepositBookings=bookings
+    .filter((item)=>hasOpenDeposit(item))
+    .sort((a,b)=>a.startsAt.localeCompare(b.startsAt));
   const bookingSearchTerm=bookingSearch.trim().toLowerCase();
   const bookingSearchResults=bookingSearchTerm
     ? bookings.filter((item)=>{
@@ -582,6 +585,23 @@ function Admin({ onExit, onLoggedOut }) {
       {selectedDateIsSunday?<div className="day-off-card"><span><CalendarBlank size={22}/></span><div><strong>Sonntag</strong><p>Sonntags bleibt Zahrashairgloss immer geschlossen und ist nicht buchbar.</p></div></div>:dayBlock?<div className="day-off-card"><span><CalendarBlank size={22}/></span><div><strong>{dayBlock.reason}</strong><p>An diesem Tag werden keine Online-Termine angeboten.</p></div></div>:<div className="admin-agenda">{dayBookings.length?dayBookings.map((item)=><button className={`agenda-item ${hasOpenDeposit(item)?'pending-payment':''}`} key={item.id} onClick={()=>{setSelectedBooking(item);setSheet('details');}}><time>{item.startsAt.slice(11,16)}</time><span className={`agenda-line ${item.serviceId==='balayage'?'long':''} ${hasOpenDeposit(item)?'pending-payment':''}`} style={{background:hasOpenDeposit(item)?undefined:colorForService(item.serviceId)}}/><div><strong>{item.firstName} {item.lastName}</strong><p>{item.serviceShort} · {durationLabel(item.duration)}</p></div><span className={`booking-source ${item.paymentStatus==='manual'?'manual':hasOpenDeposit(item)?'pending':'online'}`}>{item.paymentStatus==='manual'?'Manuell':hasOpenDeposit(item)?'30 € offen':'Online'}</span><CaretRight size={17}/></button>):<div className="empty-day"><Clock size={25}/><strong>Noch keine Termine</strong><p>Nutze „Termin“, um diesen Tag manuell zu belegen.</p></div>}</div>}
 
       <section className="quick-overview"><h3>Dieser Monat</h3><div><span><strong>{bookings.filter((item)=>item.startsAt.slice(0,7)===isoDate(monthStart).slice(0,7)).length}</strong> Termine</span><span><strong>{bookings.filter((item)=>item.startsAt.slice(0,7)===isoDate(monthStart).slice(0,7)&&item.paymentStatus==='paid').length*30} €</strong> erhalten</span><span><strong>{blocks.filter((item)=>item.startsAt.slice(0,7)===isoDate(monthStart).slice(0,7)).length}</strong> freie Tage</span></div></section>
+      <section className="pending-deposits-card">
+        <div className="section-head">
+          <div>
+            <h3>Noch nicht bestätigt</h3>
+            <p>{pendingDepositBookings.length ? `${pendingDepositBookings.length} Termine warten noch auf die Anzahlung.` : 'Aktuell gibt es keine offenen Anzahlungen.'}</p>
+          </div>
+        </div>
+        <div className="pending-deposits-list">
+          {pendingDepositBookings.length ? pendingDepositBookings.map((item)=><button key={item.id} type="button" className="pending-deposit-entry" onClick={()=>{setSelectedDate(item.startsAt.slice(0,10));setSelectedBooking(item);setSheet('details');}}>
+            <div>
+              <strong>{item.firstName} {item.lastName}</strong>
+              <span>{new Intl.DateTimeFormat('de-DE',{weekday:'short',day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date(item.startsAt))} · {item.startsAt.slice(11,16)} Uhr · {item.serviceShort}</span>
+            </div>
+            <small>30 € offen</small>
+          </button>) : <div className="empty-search">Keine offenen Anzahlungen vorhanden.</div>}
+        </div>
+      </section>
       <section className="service-color-card"><h3>Service-Farben</h3><div className="service-color-list">{services.map((item)=><div key={item.id} className="service-color-row"><div className="service-color-info"><span className="service-color-dot" style={{background:colorForService(item.id)}}/><strong>{item.short}</strong></div><div className="service-color-palette">{SERVICE_COLOR_PALETTE.map((color)=><button key={color} type="button" className={colorForService(item.id)===color?'selected':''} style={{background:color}} onClick={()=>updateServiceColor(item.id,color)} aria-label={`${item.short} Farbe ${color}`}/> )}</div></div>)}</div></section>
       <section className="waitlist-admin-card">
         <div className="section-head">
