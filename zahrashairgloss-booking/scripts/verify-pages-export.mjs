@@ -45,7 +45,7 @@ if (!existsSync(mainBundlePath)) {
 }
 
 const rootBundle = readFileSync(mainBundlePath, "utf8");
-for (const snippet of ["notification-entry", "onClick:()=>Ft(H)", "Noch nicht bestätigt"]) {
+for (const snippet of ["notification-entry", "Termin stornieren", "Noch nicht bestätigt"]) {
   if (!rootBundle.includes(snippet)) {
     throw new Error(`Wichtiger Admin-Hinweis fehlt im Bundle: ${snippet}`);
   }
